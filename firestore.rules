@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users collection - simplified rules
+    match /users/{userId} {
+      // Allow users to read/write their own document
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow admins to access all user documents
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // Allow supervisors to read their students' documents
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' &&
+        resource.data.role == 'user' &&
+        resource.data.supervisorCode == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.supervisorCode;
+      
+      // Allow anyone to read supervisor info (needed for registration)
+      allow read: if resource.data.role == 'supervisor';
+    }
+    
+    // Visits collection - simplified rules
+    match /visits/{visitId} {
+      // Allow admins full access
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // Allow supervisors to create visits
+      allow create: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor';
+      
+      // Allow supervisors to read/update/delete their own visits
+      allow read, update, delete: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' &&
+        resource.data.supervisorId == request.auth.uid;
+      
+      // Allow students to read visits they're assigned to
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        request.auth.uid in resource.data.assignedStudents;
+      
+      // Allow students to update attendance for their assigned visits
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        request.auth.uid in resource.data.assignedStudents &&
+        // Only allow updating the attendance field and its subfields
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance']);
+      
+      // Allow students to update visits when they have the correct code
+      allow update: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        (
+          // Either they're assigned to the visit
+          (request.auth.uid in resource.data.assignedStudents &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance']))
+          ||
+          // Or they have the correct visit code
+          (resource.data.visitCode == request.resource.data.visitCode &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance']))
+        );
+      
+      // Allow students to read visits they're assigned to or have the code for
+      allow read: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        (request.auth.uid in resource.data.assignedStudents || 
+         resource.data.visitCode != null);
+    }
+    
+    // Locations collection - allow supervisors and admins to read
+    match /locations/{locationId} {
+      allow read: if request.auth != null && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+  }
+} 
