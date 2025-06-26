@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  ActivityIndicator,
-  SafeAreaView,
+    ActivityIndicator,
+    Alert,
+    KeyboardAvoidingView,
+    Platform,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 // import { LinearGradient } from 'expo-linear-gradient'; // Temporarily commented out
 import { signInWithEmailAndPassword } from 'firebase/auth';
@@ -310,6 +310,15 @@ const LoginScreen = ({ navigation }) => {
                   </TouchableOpacity>
                 </View>
 
+                {/* Sign Up Link */}
+                <View style={styles.signUpContainer}>
+                  <TouchableOpacity onPress={handleNavigateToRegister} disabled={loading}>
+                    <Text style={styles.signUpText}>
+                      Don't have an account? <Text style={styles.signUpBold}>Sign Up</Text>
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
               </View>
             </View>
 
@@ -492,6 +501,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#2563EB',
     textDecorationLine: 'underline',
+  },
+  
+  // Sign Up Link styles
+  signUpContainer: {
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  signUpText: {
+    fontSize: 14,
+    color: '#64748B',
+  },
+  signUpBold: {
+    fontWeight: '600',
+    color: '#2563EB',
   },
 });
 

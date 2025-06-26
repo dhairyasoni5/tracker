@@ -2,10 +2,13 @@ import { MaterialIcons as Icon } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import { signOut } from 'firebase/auth';
 import {
+    arrayUnion,
     collection,
+    doc,
     getDocs,
     onSnapshot,
     query,
+    updateDoc,
     where
 } from 'firebase/firestore';
 import React, { useEffect, useRef, useState } from 'react';
@@ -14,6 +17,7 @@ import {
     Alert,
     Dimensions,
     FlatList,
+    Modal,
     Platform,
     RefreshControl,
     SafeAreaView,
@@ -25,6 +29,7 @@ import {
     View
 } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
+import LiveLocationMap from '../components/LiveLocationMap';
 import { auth, db } from '../firebase/firebaseConfig';
 import { useAuth } from '../utils/AuthContext';
 import ErrorHandler, { ERROR_SEVERITY } from '../utils/ErrorHandler';
@@ -50,10 +55,11 @@ const SupervisorDashboard = ({ navigation }) => {
     completedVisits: 0
   });
   const [selectedVisitId, setSelectedVisitId] = useState(null);
+  const [isZoomModalVisible, setZoomModalVisible] = useState(false);
   const mapRef = useRef(null);
 
   const visitsWithLocation = todayVisits
-    .filter(v => v.locationCoordinates)
+    .filter(v => v.locationCoordinates && v.status === 'active' && !v.endTime)
     .sort((a, b) => new Date(b.dateTime || b.createdAt?.seconds * 1000) - new Date(a.dateTime || a.createdAt?.seconds * 1000));
 
   useEffect(() => {
@@ -61,6 +67,10 @@ const SupervisorDashboard = ({ navigation }) => {
       if (!selectedVisitId || !visitsWithLocation.some(v => v.id === selectedVisitId)) {
         setSelectedVisitId(visitsWithLocation[0].id);
       }
+    } else {
+      setSelectedVisitId(null);
+      setIsVisitActive(false);
+      setVisitDuration('0h 0m');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayVisits]);
@@ -102,7 +112,7 @@ const SupervisorDashboard = ({ navigation }) => {
     }
   }, [selectedVisitId]);
 
-  const selectedVisit = todayVisits.find(v => v.id === selectedVisitId);
+  const selectedVisit = visitsWithLocation.find(v => v.id === selectedVisitId);
 
   const setupRealtimeListeners = () => {
     const unsubscribes = [];
@@ -119,15 +129,42 @@ const SupervisorDashboard = ({ navigation }) => {
       where('supervisorId', '==', userData.uid)
     );
 
-    const unsubscribeVisits = onSnapshot(visitsQuery, (snapshot) => {
+    const unsubscribeVisits = onSnapshot(visitsQuery, async (snapshot) => {
       const allVisits = [];
-      snapshot.forEach((doc) => {
-        allVisits.push({ id: doc.id, ...doc.data() });
-      });
-      
       const today = new Date();
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+
+      // Process each visit
+      for (const docSnapshot of snapshot.docs) {
+        const visitData = docSnapshot.data();
+        const visitDate = new Date(visitData.dateTime);
+        
+        // Only mark visits as completed if they are from previous days AND have startTime
+        if (visitDate < startOfDay && visitData.status === 'active' && visitData.startTime) {
+          try {
+            const visitRef = doc(db, 'visits', docSnapshot.id);
+            await updateDoc(visitRef, { 
+              status: 'completed',
+              endTime: new Date().toISOString()
+            });
+            console.log(`Marked visit ${docSnapshot.id} as completed`);
+          } catch (error) {
+            console.error(`Error updating visit ${docSnapshot.id}:`, error);
+          }
+        }
+
+        // Don't auto-complete visits that are just created
+        if (visitData.status === 'active' && !visitData.startTime) {
+          console.log(`New visit ${docSnapshot.id} detected, keeping as active`);
+        }
+
+        allVisits.push({ 
+          id: docSnapshot.id, 
+          ...visitData,
+          status: visitData.status || 'pending'
+        });
+      }
       
       const todayVisits = allVisits.filter(visit => {
         const visitDate = new Date(visit.dateTime);
@@ -136,20 +173,31 @@ const SupervisorDashboard = ({ navigation }) => {
       
       setTodayVisits(todayVisits);
       
-      // Check if there's an active visit
-      const activeVisit = todayVisits.find(visit => visit.status === 'active');
+      // Check if there's an active visit that is actually running
+      const activeVisit = todayVisits.find(visit => {
+        return visit.status === 'active' && (!visit.endTime); // Only check for endTime, not startTime
+      });
+      
+      // Update visit active state
       setIsVisitActive(!!activeVisit);
       
       if (activeVisit) {
-        // Calculate duration
-        const startTime = new Date(activeVisit.startTime);
-        const now = new Date();
-        const diffMs = now - startTime;
-        const hours = Math.floor(diffMs / (1000 * 60 * 60));
-        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-        setVisitDuration(`${hours}h ${minutes}m`);
+        // Calculate duration if startTime exists
+        if (activeVisit.startTime) {
+          const startTime = new Date(activeVisit.startTime);
+          const now = new Date();
+          const diffMs = now - startTime;
+          const hours = Math.floor(diffMs / (1000 * 60 * 60));
+          const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+          setVisitDuration(`${hours}h ${minutes}m`);
+        } else {
+          setVisitDuration('0h 0m');
+        }
+      } else {
+        setVisitDuration('0h 0m');
       }
       
+      // Update stats with the latest data
       updateStats(students, todayVisits, allVisits);
     }, (error) => {
       console.warn('Real-time listener error:', error);
@@ -191,27 +239,82 @@ const SupervisorDashboard = ({ navigation }) => {
     }
     try {
       console.log('Fetching students for supervisor code:', userData.supervisorCode);
-      const studentsQuery = query(
+      
+      // First, get students who were assigned during registration
+      const directStudentsQuery = query(
         collection(db, 'users'),
         where('role', '==', 'user'),
         where('supervisorCode', '==', userData.supervisorCode)
       );
-      const querySnapshot = await getDocs(studentsQuery);
-      const studentsList = [];
-      querySnapshot.forEach((doc) => {
+      
+      // Then, get students who joined later using supervisorCodes array
+      const joinedStudentsQuery = query(
+        collection(db, 'users'),
+        where('role', '==', 'user'),
+        where('supervisorCodes', 'array-contains', userData.supervisorCode)
+      );
+
+      console.log('Executing queries with supervisor code:', userData.supervisorCode);
+      
+      // Execute both queries
+      const [directSnapshot, joinedSnapshot] = await Promise.all([
+        getDocs(directStudentsQuery),
+        getDocs(joinedStudentsQuery)
+      ]);
+
+      console.log('Direct students count:', directSnapshot.size);
+      console.log('Joined students count:', joinedSnapshot.size);
+
+      // Combine results, avoiding duplicates
+      const studentsMap = new Map();
+      
+      // Process direct students
+      directSnapshot.forEach((doc) => {
         const studentData = doc.data();
-        studentsList.push({
+        studentsMap.set(doc.id, {
           id: doc.id,
           ...studentData,
-          // Optionally, you can keep lastSeen logic, but do NOT overwrite status or lastKnownLocation
-          // lastSeen: Math.random() > 0.5 ? 'Just now' : `${Math.floor(Math.random() * 30)} min ago`
+          status: studentData.status || 'offline',
+          lastSeen: studentData.lastSeen || 'Never',
+          lastKnownLocation: studentData.lastKnownLocation || null,
+          joinType: 'registered' // Mark as registered during signup
         });
       });
-      console.log('Fetched students:', studentsList.length);
+
+      // Process joined students
+      joinedSnapshot.forEach((doc) => {
+        const studentData = doc.data();
+        // Only add if not already in the map
+        if (!studentsMap.has(doc.id)) {
+          studentsMap.set(doc.id, {
+            id: doc.id,
+            ...studentData,
+            status: studentData.status || 'offline',
+            lastSeen: studentData.lastSeen || 'Never',
+            lastKnownLocation: studentData.lastKnownLocation || null,
+            joinType: 'joined' // Mark as joined later
+          });
+        }
+      });
+
+      const studentsList = Array.from(studentsMap.values());
+      console.log('Total unique students found:', studentsList.length);
       setStudents(studentsList);
       return studentsList;
     } catch (error) {
       console.error('Error fetching students:', error);
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        supervisorCode: userData?.supervisorCode,
+        supervisorId: userData?.uid
+      });
+      ErrorHandler.logError(error, {
+        action: 'fetchStudents',
+        supervisorId: userData?.uid,
+        supervisorCode: userData?.supervisorCode
+      }, ERROR_SEVERITY.MEDIUM);
       setStudents([]);
       return [];
     }
@@ -231,14 +334,32 @@ const SupervisorDashboard = ({ navigation }) => {
 
       const querySnapshot = await getDocs(visitsQuery);
       const allVisits = [];
-
-      querySnapshot.forEach((doc) => {
-        allVisits.push({ id: doc.id, ...doc.data() });
-      });
-
       const today = new Date();
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+
+      // Process each visit
+      for (const docSnapshot of querySnapshot.docs) {
+        const visitData = docSnapshot.data();
+        const visitDate = new Date(visitData.dateTime);
+        
+        // If visit is from a previous day and still active, mark it as completed
+        if (visitDate < startOfDay && visitData.status === 'active') {
+          try {
+            const visitRef = doc(db, 'visits', docSnapshot.id);
+            await updateDoc(visitRef, { status: 'completed' });
+            console.log(`Marked visit ${docSnapshot.id} as completed`);
+          } catch (error) {
+            console.error(`Error updating visit ${docSnapshot.id}:`, error);
+          }
+        }
+
+        allVisits.push({ 
+          id: docSnapshot.id, 
+          ...visitData,
+          status: visitData.status || 'pending'
+        });
+      }
       
       const todayVisits = allVisits.filter(visit => {
         const visitDate = new Date(visit.dateTime);
@@ -268,10 +389,31 @@ const SupervisorDashboard = ({ navigation }) => {
 
       const querySnapshot = await getDocs(visitsQuery);
       const allVisits = [];
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-      querySnapshot.forEach((doc) => {
-        allVisits.push({ id: doc.id, ...doc.data() });
-      });
+      // Process each visit
+      for (const docSnapshot of querySnapshot.docs) {
+        const visitData = docSnapshot.data();
+        const visitDate = new Date(visitData.dateTime);
+        
+        // If visit is from a previous day and still active, mark it as completed
+        if (visitDate < startOfDay && visitData.status === 'active') {
+          try {
+            const visitRef = doc(db, 'visits', docSnapshot.id);
+            await updateDoc(visitRef, { status: 'completed' });
+            console.log(`Marked visit ${docSnapshot.id} as completed`);
+          } catch (error) {
+            console.error(`Error updating visit ${docSnapshot.id}:`, error);
+          }
+        }
+
+        allVisits.push({ 
+          id: docSnapshot.id, 
+          ...visitData,
+          status: visitData.status || 'pending'
+        });
+      }
 
       setAllVisits(allVisits);
       return allVisits;
@@ -284,9 +426,59 @@ const SupervisorDashboard = ({ navigation }) => {
 
   const updateStats = (studentsList = [], visitsList = [], allVisitsList = []) => {
     const totalStudents = studentsList.length;
-    const activeStudents = studentsList.filter(s => s.status === 'active').length;
-    const emergencyAlerts = studentsList.filter(s => s.status === 'emergency').length;
-    const activeVisits = allVisitsList.filter(v => v.status === 'active').length;
+    
+    // Find active visit
+    const activeVisit = visitsList.find(visit => visit.status === 'active' && !visit.endTime);
+    
+    // Update student status based on check-in for the active visit
+    const updatedStudentsList = studentsList.map(student => {
+      // Default status is offline
+      let status = 'offline';
+      
+      if (activeVisit) {
+        const attendance = activeVisit.attendance || {};
+        const checkedIn = attendance.checkedIn || [];
+        const checkedOut = attendance.checkedOut || [];
+        
+        if (checkedIn.includes(student.id)) {
+          if (checkedOut.includes(student.id)) {
+            status = 'offline'; // Student has checked out
+          } else {
+            // Check if student is within geofence
+            if (student.lastKnownLocation) {
+              const lat1 = student.lastKnownLocation.latitude;
+              const lon1 = student.lastKnownLocation.longitude;
+              const lat2 = activeVisit.locationCoordinates.latitude;
+              const lon2 = activeVisit.locationCoordinates.longitude;
+              
+              // Haversine formula
+              function toRad(x) { return x * Math.PI / 180; }
+              const R = 6371000;
+              const dLat = toRad(lat2 - lat1);
+              const dLon = toRad(lon2 - lon1);
+              const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+              const distance = R * c;
+              
+              status = distance <= 500 ? 'active' : 'emergency';
+            } else {
+              status = 'emergency'; // No location data
+            }
+          }
+        }
+      }
+      
+      return { ...student, status };
+    });
+    
+    const activeStudents = updatedStudentsList.filter(s => s.status === 'active').length;
+    const emergencyAlerts = updatedStudentsList.filter(s => s.status === 'emergency').length;
+    
+    // Count active visits from today's visits
+    const activeVisits = visitsList.filter(v => v.status === 'active' && !v.endTime).length;
+    
     const completedVisits = allVisitsList.filter(v => v.status === 'completed').length;
     
     let checkedInToday = 0;
@@ -304,6 +496,9 @@ const SupervisorDashboard = ({ navigation }) => {
       activeVisits,
       completedVisits
     });
+
+    // Update students state with new statuses
+    setStudents(updatedStudentsList);
   };
 
   const onRefresh = async () => {
@@ -391,19 +586,54 @@ const SupervisorDashboard = ({ navigation }) => {
     }
   };
 
-  const handleEndVisit = () => {
+  const handleEndVisit = async () => {
+    if (!selectedVisit) return;
+
     Alert.alert(
       'End Visit',
-      'Are you sure you want to end the current visit?',
+      'Are you sure you want to end the current visit? This will check out all students.',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
           text: 'End Visit', 
           style: 'destructive',
-          onPress: () => {
-            setIsVisitActive(false);
-            setVisitDuration('0h 0m');
-            Alert.alert('Success', 'Visit ended successfully!');
+          onPress: async () => {
+            try {
+              const visitRef = doc(db, 'visits', selectedVisit.id);
+              const now = new Date().toISOString();
+              
+              // Get all checked-in students
+              const checkedInStudents = selectedVisit.attendance?.checkedIn || [];
+              
+              // Update visit status and check out all students
+              await updateDoc(visitRef, {
+                status: 'completed',
+                endTime: now,
+                'attendance.checkedOut': arrayUnion(...checkedInStudents),
+                'attendance.checkedIn': [],
+                [`attendance.endTime`]: now
+              });
+
+              // Update local state
+              setIsVisitActive(false);
+              setVisitDuration('0h 0m');
+              setSelectedVisitId(null);
+              
+              // Refresh data
+              await fetchDashboardData();
+              await fetchAllVisits();
+              
+              Alert.alert('Success', 'Visit ended successfully! All students have been checked out.');
+            } catch (error) {
+              console.error('Error ending visit:', error);
+              ErrorHandler.logError(error, {
+                action: 'endVisit',
+                visitId: selectedVisit.id,
+                supervisorId: userData?.uid
+              }, ERROR_SEVERITY.HIGH);
+              
+              Alert.alert('Error', 'Failed to end visit. Please try again.');
+            }
           }
         }
       ]
@@ -448,6 +678,34 @@ const SupervisorDashboard = ({ navigation }) => {
     }
   };
 
+  const getCheckedInStudents = (selectedVisit, students) => {
+    if (!selectedVisit) return [];
+    const attendance = selectedVisit.attendance || {};
+    const checkedInArray = attendance.checkedIn || [];
+    const checkedOutArray = attendance.checkedOut || [];
+    
+    return students.filter(student => {
+      if (!student.lastKnownLocation) return false;
+      if (!checkedInArray.includes(student.id)) return false;
+      if (checkedOutArray.includes(student.id)) return false;
+      const lat1 = student.lastKnownLocation.latitude;
+      const lon1 = student.lastKnownLocation.longitude;
+      const lat2 = selectedVisit.locationCoordinates.latitude;
+      const lon2 = selectedVisit.locationCoordinates.longitude;
+      // Haversine formula
+      function toRad(x) { return x * Math.PI / 180; }
+      const R = 6371000;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const distance = R * c;
+      return distance <= 500;
+    });
+  };
+
   const renderHeader = () => (
     <View style={styles.header}>
       <View style={styles.headerContent}>
@@ -486,7 +744,6 @@ const SupervisorDashboard = ({ navigation }) => {
         <View style={styles.statusLeft}>
           <View style={styles.liveDot} />
           <Text style={styles.statusText}>Visit Active</Text>
-          <Text style={styles.statusDuration}>• {visitDuration}</Text>
         </View>
         <View style={styles.statusRight}>
           <Icon name="signal-cellular-4-bar" size={16} color="#10B981" />
@@ -544,81 +801,214 @@ const SupervisorDashboard = ({ navigation }) => {
     </View>
   );
 
-  const renderQuickActions = () => (
-    <View style={styles.quickActions}>
-      <TouchableOpacity 
-        style={[styles.actionButton, styles.primaryButton, isVisitActive && styles.disabledButton]}
-        onPress={handleStartNewVisit}
-        disabled={isVisitActive}
-      >
-        <Icon name="add" size={20} color="#FFFFFF" />
-        <Text style={styles.primaryButtonText}>Start New Visit</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={[styles.actionButton, isVisitActive ? styles.dangerButton : styles.secondaryButton]}
-        onPress={isVisitActive ? handleEndVisit : () => setIsVisitActive(true)}
-      >
-        <Icon 
-          name={isVisitActive ? "stop" : "play-arrow"} 
-          size={20} 
-          color={isVisitActive ? "#FFFFFF" : "#2563EB"} 
-        />
-        <Text style={[styles.buttonText, isVisitActive ? styles.dangerButtonText : styles.secondaryButtonText]}>
-          {isVisitActive ? "End Visit" : "Resume"}
-        </Text>
-      </TouchableOpacity>
-    </View>
+  const renderQuickActions = () => {
+    // Check if there's an active visit in today's visits
+    const hasActiveVisit = todayVisits.some(v => v.status === 'active' && !v.endTime);
+    
+    return (
+      <View style={styles.quickActions}>
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.primaryButton, hasActiveVisit && styles.disabledButton]}
+          onPress={handleStartNewVisit}
+          disabled={hasActiveVisit}
+        >
+          <Icon name="add" size={20} color="#FFFFFF" />
+          <Text style={styles.primaryButtonText}>Start New Visit</Text>
+        </TouchableOpacity>
+        
+        {hasActiveVisit && (
+          <TouchableOpacity 
+            style={[styles.actionButton, styles.dangerButton]}
+            onPress={handleEndVisit}
+          >
+            <Icon name="stop" size={20} color="#FFFFFF" />
+            <Text style={styles.dangerButtonText}>End Visit</Text>
+          </TouchableOpacity>
+        )}
+        
+        <TouchableOpacity 
+          style={[styles.actionButton, styles.secondaryButton]}
+          onPress={() => navigation.navigate('BleDebug')}
+        >
+          <Icon name="bluetooth" size={20} color="#3B82F6" />
+          <Text style={styles.secondaryButtonText}>BLE Debug</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderZoomButton = () => (
+    <TouchableOpacity
+      style={styles.zoomButton}
+      onPress={() => setZoomModalVisible(true)}
+    >
+      <Icon name="zoom-in" size={24} color="#2563EB" />
+    </TouchableOpacity>
   );
 
-  const renderMapView = () => {
+  const renderZoomModal = () => {
     if (!selectedVisit) return null;
-    const attendance = selectedVisit.attendance || {};
-    const checkedInArray = attendance.checkedIn || [];
-    const checkedOutArray = attendance.checkedOut || [];
-    // Only show students who are checked in and not checked out for this visit
-    const checkedInStudents = students.filter(student => {
-      if (!student.lastKnownLocation) return false;
-      if (!checkedInArray.includes(student.id)) return false;
-      if (checkedOutArray.includes(student.id)) return false;
-      const lat1 = student.lastKnownLocation.latitude;
-      const lon1 = student.lastKnownLocation.longitude;
-      const lat2 = selectedVisit.locationCoordinates.latitude;
-      const lon2 = selectedVisit.locationCoordinates.longitude;
-      // Haversine formula
-      function toRad(x) { return x * Math.PI / 180; }
-      const R = 6371000;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-        Math.sin(dLon/2) * Math.sin(dLon/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      const distance = R * c;
-      return distance <= 500;
-    });
+    const checkedInStudents = getCheckedInStudents(selectedVisit, students);
+    
+    return (
+      <Modal
+        visible={isZoomModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setZoomModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Map View</Text>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => setZoomModalVisible(false)}
+              >
+                <Icon name="close" size={24} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.modalMapContainer}>
+              <MapView
+                style={{ flex: 1 }}
+                initialRegion={{
+                  latitude: selectedVisit.locationCoordinates.latitude,
+                  longitude: selectedVisit.locationCoordinates.longitude,
+                  latitudeDelta: 0.01,
+                  longitudeDelta: 0.01,
+                }}
+              >
+                <Marker
+                  coordinate={selectedVisit.locationCoordinates}
+                  pinColor="#e11d48"
+                  title={selectedVisit.location}
+                  description="Visit Location"
+                />
+                <Circle
+                  center={selectedVisit.locationCoordinates}
+                  radius={500}
+                  strokeColor="#2563EB"
+                  fillColor="rgba(37,99,235,0.1)"
+                />
+                {checkedInStudents.map((student, idx) => (
+                  <Marker
+                    key={student.id || idx}
+                    coordinate={student.lastKnownLocation}
+                    title={student.fullName}
+                    description={`Status: ${student.status || 'offline'}\nLast Seen: ${student.lastSeen || 'Unknown'}`}
+                  >
+                    <View style={{ 
+                      width: 18, 
+                      height: 18, 
+                      borderRadius: 9, 
+                      backgroundColor: '#10B981', 
+                      borderWidth: 2, 
+                      borderColor: '#fff', 
+                      justifyContent: 'center', 
+                      alignItems: 'center',
+                      ...Platform.select({
+                        web: {
+                          boxShadow: '0 2px 4px rgba(0, 0, 0, 0.3)',
+                        },
+                        default: {
+                          shadowColor: '#000',
+                          shadowOffset: { width: 0, height: 2 },
+                          shadowOpacity: 0.3,
+                          shadowRadius: 4,
+                          elevation: 5,
+                        },
+                      }),
+                    }}>
+                      <Text style={{ 
+                        color: '#fff', 
+                        fontSize: 10, 
+                        fontWeight: 'bold' 
+                      }}>
+                        {student.fullName ? student.fullName[0] : 'S'}
+                      </Text>
+                    </View>
+                  </Marker>
+                ))}
+              </MapView>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  const renderMapView = () => {
+    // Check if there's no selected visit or if the selected visit is not active
+    if (!selectedVisit || !selectedVisit.locationCoordinates) {
+      return (
+        <View style={styles.mapCard}>
+          <View style={styles.mapHeader}>
+            <View style={styles.mapHeaderLeft}>
+              <Icon name="map" size={20} color="#1F2937" />
+              <Text style={styles.mapTitle}>Live Location Map</Text>
+            </View>
+            <View style={styles.visitSelector}>
+              <Picker
+                selectedValue={selectedVisitId}
+                onValueChange={setSelectedVisitId}
+                style={styles.visitPicker}
+              >
+                {visitsWithLocation.map((visit) => (
+                  <Picker.Item
+                    key={visit.id}
+                    label={`${visit.location} (${new Date(visit.dateTime || visit.createdAt?.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`}
+                    value={visit.id}
+                  />
+                ))}
+              </Picker>
+            </View>
+          </View>
+          <View style={[styles.mapContainer, styles.inactiveMapContainer]}>
+            <View style={styles.inactiveState}>
+              <Icon name="gps-off" size={48} color="#94A3B8" />
+              <Text style={styles.inactiveTitle}>GPS Tracking Inactive</Text>
+              <Text style={styles.inactiveSubtext}>
+                Start or resume a visit to view live GPS tracking of students
+              </Text>
+              <View style={styles.inactiveButtons}>
+                <TouchableOpacity 
+                  style={[styles.inactiveButton, styles.primaryButton]}
+                  onPress={handleStartNewVisit}
+                >
+                  <Icon name="add" size={20} color="#FFFFFF" />
+                  <Text style={styles.primaryButtonText}>Start New Visit</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    const checkedInStudents = getCheckedInStudents(selectedVisit, students);
 
     return (
       <View style={styles.mapCard}>
         <View style={styles.mapHeader}>
-          <Icon name="map" size={20} color="#1F2937" />
-          <Text style={styles.mapTitle}>Live Location Map</Text>
-        </View>
-        {/* Dropdown to select visit */}
-        <View style={{ marginBottom: 12, borderWidth: 1, borderColor: '#e1e8ed', borderRadius: 8, backgroundColor: '#fff' }}>
-          <Picker
-            selectedValue={selectedVisitId}
-            onValueChange={setSelectedVisitId}
-            style={{ height: 48 }}
-          >
-            {visitsWithLocation.map((visit) => (
-              <Picker.Item
-                key={visit.id}
-                label={`${visit.location} (${new Date(visit.dateTime || visit.createdAt?.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`}
-                value={visit.id}
-              />
-            ))}
-          </Picker>
+          <View style={styles.mapHeaderLeft}>
+            <Icon name="map" size={20} color="#1F2937" />
+            <Text style={styles.mapTitle}>Live Location Map</Text>
+          </View>
+          <View style={styles.visitSelector}>
+            <Picker
+              selectedValue={selectedVisitId}
+              onValueChange={setSelectedVisitId}
+              style={styles.visitPicker}
+            >
+              {visitsWithLocation.map((visit) => (
+                <Picker.Item
+                  key={visit.id}
+                  label={`${visit.location} (${new Date(visit.dateTime || visit.createdAt?.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`}
+                  value={visit.id}
+                />
+              ))}
+            </Picker>
+          </View>
         </View>
         <View style={styles.mapContainer}>
           <MapView
@@ -631,21 +1021,18 @@ const SupervisorDashboard = ({ navigation }) => {
               longitudeDelta: 0.01,
             }}
           >
-            {/* Visit location pin (red) */}
             <Marker
               coordinate={selectedVisit.locationCoordinates}
               pinColor="#e11d48"
               title={selectedVisit.location}
               description="Visit Location"
             />
-            {/* 500m perimeter */}
             <Circle
               center={selectedVisit.locationCoordinates}
               radius={500}
               strokeColor="#2563EB"
               fillColor="rgba(37,99,235,0.1)"
             />
-            {/* Checked-in students within perimeter */}
             {checkedInStudents.map((student, idx) => (
               <Marker
                 key={student.id || idx}
@@ -659,33 +1046,87 @@ const SupervisorDashboard = ({ navigation }) => {
               </Marker>
             ))}
           </MapView>
+          {renderZoomButton()}
         </View>
+        {renderZoomModal()}
       </View>
     );
   };
 
-  const renderStudentItem = ({ item, index }) => (
-    <TouchableOpacity 
-      style={styles.studentItem}
-      onPress={() => handleStudentPress(item)}
-    >
-      <View style={styles.studentLeft}>
-        <View style={[styles.statusDot, { backgroundColor: getStatusColor(item.status) }]} />
-        <View style={styles.studentInfo}>
-          <Text style={styles.studentName}>{item.fullName}</Text>
-          <View style={styles.lastSeenContainer}>
-            <Icon name="schedule" size={12} color="#6B7280" />
-            <Text style={styles.lastSeenText}>{item.lastSeen}</Text>
+  const renderStudentItem = ({ item, index }) => {
+    // Get the active visit
+    const activeVisit = todayVisits.find(visit => visit.status === 'active');
+    
+    // Determine student status for the active visit
+    let status = 'offline';
+    if (activeVisit) {
+      const attendance = activeVisit.attendance || {};
+      const checkedIn = attendance.checkedIn || [];
+      const checkedOut = attendance.checkedOut || [];
+      
+      if (checkedIn.includes(item.id)) {
+        if (checkedOut.includes(item.id)) {
+          status = 'offline';
+        } else if (item.lastKnownLocation) {
+          const lat1 = item.lastKnownLocation.latitude;
+          const lon1 = item.lastKnownLocation.longitude;
+          const lat2 = activeVisit.locationCoordinates.latitude;
+          const lon2 = activeVisit.locationCoordinates.longitude;
+          
+          // Haversine formula
+          function toRad(x) { return x * Math.PI / 180; }
+          const R = 6371000;
+          const dLat = toRad(lat2 - lat1);
+          const dLon = toRad(lon2 - lon1);
+          const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          const distance = R * c;
+          
+          status = distance <= 500 ? 'active' : 'emergency';
+        } else {
+          status = 'emergency';
+        }
+      }
+    }
+
+    return (
+      <TouchableOpacity 
+        style={styles.studentItem}
+        onPress={() => handleStudentPress(item)}
+      >
+        <View style={styles.studentLeft}>
+          <View style={[styles.statusDot, { backgroundColor: getStatusColor(status) }]} />
+          <View style={styles.studentInfo}>
+            <Text style={styles.studentName}>{item.fullName}</Text>
+            <View style={styles.studentDetails}>
+              <View style={styles.lastSeenContainer}>
+                <Icon name="schedule" size={12} color="#6B7280" />
+                <Text style={styles.lastSeenText}>{item.lastSeen}</Text>
+              </View>
+              <View style={[
+                styles.joinTypeBadge,
+                { backgroundColor: item.joinType === 'registered' ? '#EFF6FF' : '#F0FDF4' }
+              ]}>
+                <Text style={[
+                  styles.joinTypeText,
+                  { color: item.joinType === 'registered' ? '#1E40AF' : '#166534' }
+                ]}>
+                  {item.joinType === 'registered' ? 'Registered' : 'Joined'}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
-      </View>
-      <View style={[styles.statusBadge, getStatusBadge(item.status)]}>
-        <Text style={[styles.statusBadgeText, { color: getStatusBadge(item.status).color }]}>
-          {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
+        <View style={[styles.statusBadge, getStatusBadge(status)]}>
+          <Text style={[styles.statusBadgeText, { color: getStatusBadge(status).color }]}>
+            {status.charAt(0).toUpperCase() + status.slice(1)}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   const renderStudentsList = () => (
     <View style={styles.studentsCard}>
@@ -726,10 +1167,17 @@ const SupervisorDashboard = ({ navigation }) => {
         ) : (
           <View style={styles.emptyState}>
             <Icon name="people-outline" size={48} color="#94A3B8" />
-            <Text style={styles.emptyStateText}>No students registered yet</Text>
+            <Text style={styles.emptyStateText}>No students joined yet</Text>
             <Text style={styles.emptyStateSubtext}>
-              Share your supervisor code: {userData?.supervisorCode}
+              Share your supervisor code with students: {userData?.supervisorCode}
             </Text>
+            <TouchableOpacity 
+              style={styles.refreshButton}
+              onPress={onRefresh}
+            >
+              <Icon name="refresh" size={16} color="#2563EB" />
+              <Text style={styles.refreshButtonText}>Refresh</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -742,7 +1190,6 @@ const SupervisorDashboard = ({ navigation }) => {
         return (
           <>
             {renderMapView()}
-            {renderStats()}
           </>
         );
       case 'students':
@@ -775,7 +1222,14 @@ const SupervisorDashboard = ({ navigation }) => {
             <View style={styles.visitsContent}>
               {allVisits.length > 0 ? (
                 <FlatList
-                  data={allVisits.slice(0, 5)} // Show only first 5 visits
+                  data={allVisits
+                    .sort((a, b) => {
+                      // Sort by dateTime or createdAt, whichever is available
+                      const dateA = new Date(a.dateTime || a.createdAt?.seconds * 1000 || a.createdAt);
+                      const dateB = new Date(b.dateTime || b.createdAt?.seconds * 1000 || b.createdAt);
+                      return dateB - dateA; // Sort in descending order (newest first)
+                    })
+                    .slice(0, 5)} // Show only first 5 visits
                   keyExtractor={(item) => item.id}
                   renderItem={({ item }) => (
                     <TouchableOpacity 
@@ -784,21 +1238,29 @@ const SupervisorDashboard = ({ navigation }) => {
                     >
                       <View style={styles.visitLeft}>
                         <Text style={styles.visitLocation}>{item.location || 'Industrial Visit'}</Text>
-                        <Text style={styles.visitDate}>
-                          {new Date(item.dateTime || item.createdAt).toLocaleDateString()}
-                        </Text>
+                        <View style={styles.visitDetails}>
+                          <Text style={styles.visitDate}>
+                            {new Date(item.dateTime || item.createdAt).toLocaleDateString()}
+                          </Text>
+                          {item.visitCode && (
+                            <View style={styles.visitCodeContainer}>
+                              <Text style={styles.visitCodeLabel}>Code: </Text>
+                              <Text style={styles.visitCode}>{item.visitCode}</Text>
+                            </View>
+                          )}
+                        </View>
                       </View>
                       <View style={[
                         styles.visitStatusBadge,
-                        { backgroundColor: item.status === 'active' ? '#DCFCE7' : 
-                                          item.status === 'completed' ? '#EFF6FF' : '#FEF3C7' }
+                        { backgroundColor: (item.status || 'pending') === 'active' ? '#DCFCE7' : 
+                                          (item.status || 'pending') === 'completed' ? '#EFF6FF' : '#FEF3C7' }
                       ]}>
                         <Text style={[
                           styles.visitStatusText,
-                          { color: item.status === 'active' ? '#166534' : 
-                                  item.status === 'completed' ? '#1E40AF' : '#92400E' }
+                          { color: (item.status || 'pending') === 'active' ? '#166534' : 
+                                  (item.status || 'pending') === 'completed' ? '#1E40AF' : '#92400E' }
                         ]}>
-                          {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
+                          {(item.status || 'pending').charAt(0).toUpperCase() + (item.status || 'pending').slice(1)}
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -835,6 +1297,33 @@ const SupervisorDashboard = ({ navigation }) => {
     }
   };
 
+  const renderLiveTrackingCard = () => (
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <View style={styles.cardTitleContainer}>
+          <MaterialIcons name="location-on" size={24} color="#2563eb" />
+          <Text style={styles.cardTitle}>Live Tracking</Text>
+        </View>
+        <TouchableOpacity 
+          style={styles.refreshButton}
+          onPress={fetchDashboardData}
+        >
+          <MaterialIcons name="refresh" size={24} color="#2563eb" />
+        </TouchableOpacity>
+      </View>
+      <View style={styles.mapContainer}>
+        <LiveLocationMap 
+          onVisitStatusChange={(isTracking) => {
+            setIsVisitActive(isTracking);
+            if (!isTracking) {
+              fetchDashboardData();
+            }
+          }}
+        />
+      </View>
+    </View>
+  );
+
   if (loading) {
     return (
       <View style={[styles.container, styles.centered]}>
@@ -853,7 +1342,6 @@ const SupervisorDashboard = ({ navigation }) => {
       />
       {renderHeader()}
       {renderStatusBar()}
-      {renderStats()}
       
       <ScrollView 
         style={styles.scrollContainer}
@@ -866,6 +1354,7 @@ const SupervisorDashboard = ({ navigation }) => {
           />
         }
       >
+        {renderStats()}
         {renderQuickActions()}
         
         {/* Tab Navigation */}
@@ -1109,9 +1598,15 @@ const styles = StyleSheet.create({
   },
   mapHeader: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 12,
+  },
+  mapHeaderLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 12,
   },
   mapTitle: {
     fontSize: 18,
@@ -1294,6 +1789,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#111827',
     marginBottom: 2,
+  },
+  studentDetails: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   lastSeenContainer: {
     flexDirection: 'row',
@@ -1493,10 +1993,33 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#1F2937',
   },
+  visitDetails: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 4,
+  },
   visitDate: {
     fontSize: 14,
     fontWeight: '500',
     color: '#6B7280',
+  },
+  visitCodeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  visitCodeLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  visitCode: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#1F2937',
   },
   visitStatusBadge: {
     paddingHorizontal: 8,
@@ -1600,6 +2123,152 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#FFFFFF',
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 20,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 2,
+        elevation: 1,
+      },
+    }),
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  cardTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1F2937',
+  },
+  zoomButton: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: '#FFFFFF',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '90%',
+    height: '80%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1F2937',
+  },
+  closeButton: {
+    padding: 4,
+  },
+  modalMapContainer: {
+    flex: 1,
+  },
+  inactiveMapContainer: {
+    backgroundColor: '#F9FAFB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inactiveState: {
+    alignItems: 'center',
+    padding: 16,
+    width: '100%',
+  },
+  inactiveTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1F2937',
+    marginTop: 12,
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  inactiveSubtext: {
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 8,
+    lineHeight: 18,
+  },
+  inactiveButtons: {
+    width: '100%',
+    gap: 8,
+  },
+  inactiveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: 12,
+    borderRadius: 8,
+  },
+  visitSelector: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+    borderRadius: 8,
+    backgroundColor: '#fff',
+    maxWidth: 250,
+  },
+  visitPicker: {
+    height: 40,
+  },
+  joinTypeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  joinTypeText: {
+    fontSize: 11,
+    fontWeight: '500',
   },
 });
 

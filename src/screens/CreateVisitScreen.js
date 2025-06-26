@@ -12,6 +12,7 @@ import {
     ActivityIndicator,
     Alert,
     Platform,
+    SafeAreaView,
     ScrollView,
     StyleSheet,
     Switch,
@@ -20,6 +21,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import Icon from 'react-native-vector-icons/Ionicons';
 import WebCompatibleDatePicker from '../components/WebCompatibleDatePicker';
 import { db } from '../firebase/firebaseConfig';
 import { useAuth } from '../utils/AuthContext';
@@ -60,6 +62,7 @@ const CreateVisitScreen = ({ navigation }) => {
   const fetchStudents = async () => {
     try {
       setLoadingStudents(true);
+      console.log('Fetching students for visit creation...');
       let studentsQuery;
 
       if (userData.role === 'admin') {
@@ -69,39 +72,100 @@ const CreateVisitScreen = ({ navigation }) => {
           where('role', '==', 'user')
         );
       } else if (userData.role === 'supervisor') {
-        // Supervisor can only see their own students
-        studentsQuery = query(
+        // First, get students who were assigned during registration
+        const directStudentsQuery = query(
           collection(db, 'users'),
           where('role', '==', 'user'),
           where('supervisorCode', '==', userData.supervisorCode)
         );
+        
+        // Then, get students who joined later using supervisorCodes array
+        const joinedStudentsQuery = query(
+          collection(db, 'users'),
+          where('role', '==', 'user'),
+          where('supervisorCodes', 'array-contains', userData.supervisorCode)
+        );
+
+        console.log('Executing queries with supervisor code:', userData.supervisorCode);
+        
+        // Execute both queries
+        const [directSnapshot, joinedSnapshot] = await Promise.all([
+          getDocs(directStudentsQuery),
+          getDocs(joinedStudentsQuery)
+        ]);
+
+        console.log('Direct students count:', directSnapshot.size);
+        console.log('Joined students count:', joinedSnapshot.size);
+
+        // Combine results, avoiding duplicates
+        const studentsMap = new Map();
+        
+        // Process direct students
+        directSnapshot.forEach((doc) => {
+          const studentData = doc.data();
+          studentsMap.set(doc.id, {
+            id: doc.id,
+            name: studentData.fullName,
+            email: studentData.email,
+            supervisorCode: studentData.supervisorCode,
+            isActive: studentData.isActive,
+            assignedTo: studentData.assignedTo || [],
+            joinType: 'registered'
+          });
+        });
+
+        // Process joined students
+        joinedSnapshot.forEach((doc) => {
+          const studentData = doc.data();
+          // Only add if not already in the map
+          if (!studentsMap.has(doc.id)) {
+            studentsMap.set(doc.id, {
+              id: doc.id,
+              name: studentData.fullName,
+              email: studentData.email,
+              supervisorCode: studentData.supervisorCode,
+              isActive: studentData.isActive,
+              assignedTo: studentData.assignedTo || [],
+              joinType: 'joined'
+            });
+          }
+        });
+
+        const studentsList = Array.from(studentsMap.values());
+        // Filter only active students
+        const activeStudents = studentsList.filter(student => student.isActive !== false);
+        console.log('Total unique active students found:', activeStudents.length);
+        setStudents(activeStudents);
+        return;
       }
 
-      const querySnapshot = await getDocs(studentsQuery);
-      const studentsList = [];
-      
-      querySnapshot.forEach((doc) => {
-        const studentData = doc.data();
-        studentsList.push({
-          id: doc.id,
-          name: studentData.fullName,
-          email: studentData.email,
-          supervisorCode: studentData.supervisorCode,
-          isActive: studentData.isActive
+      if (studentsQuery) {
+        const querySnapshot = await getDocs(studentsQuery);
+        const studentsList = querySnapshot.docs.map(doc => {
+          const studentData = doc.data();
+          return {
+            id: doc.id,
+            name: studentData.fullName,
+            email: studentData.email,
+            supervisorCode: studentData.supervisorCode,
+            isActive: studentData.isActive,
+            assignedTo: studentData.assignedTo || []
+          };
         });
-      });
-
-      // Filter only active students
-      const activeStudents = studentsList.filter(student => student.isActive !== false);
-      setStudents(activeStudents);
+        // Filter only active students
+        const activeStudents = studentsList.filter(student => student.isActive !== false);
+        setStudents(activeStudents);
+      }
     } catch (error) {
-      ErrorHandler.logError(error, {
-        action: 'fetchStudents',
-        userRole: userData.role,
-        supervisorCode: userData.supervisorCode
-      }, ERROR_SEVERITY.MEDIUM);
-      
-      Alert.alert('Error', 'Failed to load students. Please try again.');
+      console.error('Error fetching students:', error);
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        supervisorCode: userData?.supervisorCode,
+        supervisorId: userData?.uid
+      });
+      Alert.alert('Error', 'Failed to fetch students. Please try again.');
     } finally {
       setLoadingStudents(false);
     }
@@ -157,7 +221,7 @@ const CreateVisitScreen = ({ navigation }) => {
     setShowDatePicker(true);
   };
 
-  const toggleStudentSelection = (studentId) => {
+  const handleStudentSelect = (studentId) => {
     setSelectedStudents(prev => {
       if (prev.includes(studentId)) {
         return prev.filter(id => id !== studentId);
@@ -167,13 +231,12 @@ const CreateVisitScreen = ({ navigation }) => {
     });
   };
 
-  const toggleSelectAll = () => {
-    if (selectAll) {
+  const handleSelectAll = () => {
+    if (selectedStudents.length === students.length) {
       setSelectedStudents([]);
     } else {
       setSelectedStudents(students.map(student => student.id));
     }
-    setSelectAll(!selectAll);
   };
 
   const validateForm = () => {
@@ -287,8 +350,46 @@ const CreateVisitScreen = ({ navigation }) => {
     return Math.floor(100000 + Math.random() * 900000).toString();
   };
 
+  const renderStudentItem = ({ item }) => (
+    <TouchableOpacity
+      style={[
+        styles.studentItem,
+        selectedStudents.includes(item.id) && styles.selectedStudentItem
+      ]}
+      onPress={() => handleStudentSelect(item.id)}
+    >
+      <View style={styles.studentInfo}>
+        <Text style={styles.studentName}>{item.name}</Text>
+        <Text style={styles.studentEmail}>{item.email}</Text>
+        {item.joinType && (
+          <View style={[
+            styles.joinTypeBadge,
+            { backgroundColor: item.joinType === 'registered' ? '#EFF6FF' : '#F0FDF4' }
+          ]}>
+            <Text style={[
+              styles.joinTypeText,
+              { color: item.joinType === 'registered' ? '#1E40AF' : '#166534' }
+            ]}>
+              {item.joinType === 'registered' ? 'Registered' : 'Joined'}
+            </Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.checkboxContainer}>
+        <View style={[
+          styles.checkbox,
+          selectedStudents.includes(item.id) && styles.checkedBox
+        ]}>
+          {selectedStudents.includes(item.id) && (
+            <Icon name="checkmark" size={16} color="#FFFFFF" />
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Create New Visit</Text>
         <Text style={styles.subtitle}>Plan an industrial visit for your students</Text>
@@ -422,11 +523,11 @@ const CreateVisitScreen = ({ navigation }) => {
             {students.length > 0 && (
               <TouchableOpacity
                 style={styles.selectAllButton}
-                onPress={toggleSelectAll}
+                onPress={handleSelectAll}
                 disabled={loading}
               >
                 <Text style={styles.selectAllText}>
-                  {selectAll ? 'Deselect All' : 'Select All'}
+                  {selectedStudents.length === students.length ? 'Deselect All' : 'Select All'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -455,28 +556,9 @@ const CreateVisitScreen = ({ navigation }) => {
           ) : (
             <View style={styles.studentsList}>
               {students.map((student) => (
-                <TouchableOpacity
-                  key={student.id}
-                  style={[
-                    styles.studentItem,
-                    selectedStudents.includes(student.id) && styles.selectedStudent
-                  ]}
-                  onPress={() => toggleStudentSelection(student.id)}
-                  disabled={loading}
-                >
-                  <View style={styles.studentInfo}>
-                    <Text style={styles.studentName}>{student.name}</Text>
-                    <Text style={styles.studentEmail}>{student.email}</Text>
-                  </View>
-                  <View style={[
-                    styles.checkbox,
-                    selectedStudents.includes(student.id) && styles.checkedBox
-                  ]}>
-                    {selectedStudents.includes(student.id) && (
-                      <Text style={styles.checkmark}>✓</Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
+                <View key={student.id}>
+                  {renderStudentItem({ item: student })}
+                </View>
               ))}
             </View>
           )}
@@ -526,7 +608,7 @@ const CreateVisitScreen = ({ navigation }) => {
           />
         )
       )}
-    </View>
+    </SafeAreaView>
   );
 };
 
@@ -635,15 +717,15 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   selectAllButton: {
-    backgroundColor: '#3498db',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#2563EB',
+    borderRadius: 6,
   },
   selectAllText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   loadingContainer: {
     flexDirection: 'row',
@@ -697,7 +779,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f1f2f6',
   },
-  selectedStudent: {
+  selectedStudentItem: {
     backgroundColor: '#e8f5e8',
   },
   studentInfo: {
@@ -713,7 +795,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#7f8c8d',
   },
-  checkbox: {
+  checkboxContainer: {
     width: 24,
     height: 24,
     borderRadius: 4,
@@ -727,10 +809,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#27ae60',
     borderColor: '#27ae60',
   },
-  checkmark: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: '#e1e8ed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
   },
   createButton: {
     backgroundColor: '#27ae60',
@@ -755,6 +842,17 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  joinTypeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  joinTypeText: {
+    fontSize: 11,
+    fontWeight: '500',
   },
 });
 

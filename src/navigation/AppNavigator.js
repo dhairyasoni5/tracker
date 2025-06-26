@@ -1,22 +1,27 @@
-import React, { useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
-import { AuthProvider, useAuth } from '../utils/AuthContext';
+import React, { useEffect } from 'react';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import ErrorBoundary from '../components/ErrorBoundary';
+import { AuthProvider, useAuth } from '../utils/AuthContext';
+import { IndoorLocationProvider } from '../context/IndoorLocationContext';
 import ErrorHandler from '../utils/ErrorHandler';
 
 // Import screens
+import AdminDashboard from '../screens/AdminDashboard';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
-import AdminDashboard from '../screens/AdminDashboard';
 import SupervisorDashboard from '../screens/SupervisorDashboard';
 import UserTracker from '../screens/UserTracker';
 
 // Import new visit screens
 import CreateVisitScreen from '../screens/CreateVisitScreen';
-import VisitListScreen from '../screens/VisitListScreen';
 import VisitDetailScreen from '../screens/VisitDetailScreen';
+import VisitListScreen from '../screens/VisitListScreen';
+
+// Import new indoor tracking screens
+import IndoorTrackingScreen from '../screens/IndoorTrackingScreen';
+import BleDebugScreen from '../screens/BleDebugScreen';
 
 const Stack = createStackNavigator();
 
@@ -147,18 +152,47 @@ const AppNavigation = () => {
           headerTitleStyle: {
             fontWeight: 'bold',
           },
+          presentation: 'modal'
         }}
       >
-        {isAuthenticated && userData ? (
-          // User is authenticated and has valid data
+        {!isAuthenticated ? (
+          // Auth Stack
+          <>
+            <Stack.Screen 
+              name="Login" 
+              component={LoginScreen}
+              options={{
+                headerShown: false,
+              }}
+            />
+            <Stack.Screen 
+              name="Register" 
+              component={RegisterScreen}
+              options={{
+                headerShown: false,
+              }}
+            />
+          </>
+        ) : (
+          // Main App Stack
           <>
             <Stack.Screen 
               name={getDashboardName()} 
               component={getDashboardComponent()}
               options={{
                 title: getDashboardTitle(),
-                headerShown: false, // Dashboard handles its own header
+                headerShown: false,
               }}
+            />
+            <Stack.Screen 
+              name="IndoorTracking" 
+              component={IndoorTrackingScreen}
+              options={{ title: 'Indoor Tracking' }}
+            />
+            <Stack.Screen 
+              name="BleDebug" 
+              component={BleDebugScreen}
+              options={{ title: 'BLE Debug' }}
             />
             <Stack.Screen 
               name="VisitList" 
@@ -182,24 +216,6 @@ const AppNavigation = () => {
               }}
             />
           </>
-        ) : (
-          // User is not authenticated
-          <>
-            <Stack.Screen 
-              name="Login" 
-              component={LoginScreen}
-              options={{
-                headerShown: false,
-              }}
-            />
-            <Stack.Screen 
-              name="Register" 
-              component={RegisterScreen}
-              options={{
-                headerShown: false,
-              }}
-            />
-          </>
         )}
       </Stack.Navigator>
     </NavigationContainer>
@@ -218,7 +234,9 @@ const AppNavigator = () => {
   return (
     <ErrorBoundary componentName="AppNavigator">
       <AuthProvider>
-        <ErrorBoundaryWrappedNavigation />
+        <IndoorLocationProvider>
+          <ErrorBoundaryWrappedNavigation />
+        </IndoorLocationProvider>
       </AuthProvider>
     </ErrorBoundary>
   );

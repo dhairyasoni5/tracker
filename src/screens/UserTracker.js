@@ -2,43 +2,81 @@ import { MaterialIcons as Icon } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { signOut } from 'firebase/auth';
 import {
-    arrayRemove,
-    arrayUnion,
-    collection,
-    doc,
-    getDocs,
-    query,
-    updateDoc,
-    where
+  arrayRemove,
+  arrayUnion,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  updateDoc,
+  where
 } from 'firebase/firestore';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Dimensions,
-    Modal,
-    Platform,
-    RefreshControl,
-    SafeAreaView,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  Modal,
+  Platform,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
+
+// Conditional import for Android-only PermissionsAndroid
+let PermissionsAndroid;
+if (Platform.OS === 'android') {
+  PermissionsAndroid = require('react-native').PermissionsAndroid;
+}
+
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { auth, db } from '../firebase/firebaseConfig';
 import { useAuth } from '../utils/AuthContext';
+import { useIndoorLocation } from '../context/IndoorLocationContext';
 import ErrorHandler, { ERROR_SEVERITY } from '../utils/ErrorHandler';
+import { requestForegroundPermissionsAsync as requestLocationPermissions } from 'expo-location';
+import IndoorMapModal from '../components/IndoorMapModal';
+
+const TARGET_BEACON_MACS = [
+  'F0:03:2A:53:00:CE', // Cafeteria
+  'F0:03:2A:53:00:D2', // Office
+  'F0:03:2A:53:00:C9', // Main Area
+];
+const TARGET_UUID = 'FDA50693-A4E2-4FB1-AFCF-C6EB07647825';
+const TARGET_MAJOR = 10835;
 
 const { width, height } = Dimensions.get('window');
 
 const UserTracker = ({ navigation }) => {
   const { userData, clearAuthState } = useAuth();
+  const {
+    // BLE and Indoor Location State
+    beacons,
+    isTracking,
+    bluetoothState,
+    error: bleError,
+    debugInfo,
+    
+    // Actions
+    startTracking,
+    stopTracking,
+    clearError: clearBleError,
+    
+    // Services
+    bleService
+  } = useIndoorLocation();
+
   const [supervisorInfo, setSupervisorInfo] = useState(null);
+  const [supervisors, setSupervisors] = useState([]);
+  const [supervisorCode, setSupervisorCode] = useState('');
   const [currentVisit, setCurrentVisit] = useState(null);
   const [visitHistory, setVisitHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -46,764 +84,569 @@ const UserTracker = ({ navigation }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [userStatus, setUserStatus] = useState('not-in-visit'); // 'not-in-visit', 'checked-in', 'checked-out'
   const [emergencyMode, setEmergencyMode] = useState(false);
-  const [isTracking, setIsTracking] = useState(true);
   const [locationSharing, setLocationSharing] = useState(true);
   const [visitCode, setVisitCode] = useState('');
   const [studentLocation, setStudentLocation] = useState(null);
   const [locationPermission, setLocationPermission] = useState(null);
   const [mapLocationLoading, setMapLocationLoading] = useState(false);
-  
-  // Animation values
-  const pulseAnim = new Animated.Value(1);
-  const emergencyPulse = new Animated.Value(1);
+  const [assignedVisit, setAssignedVisit] = useState(null);
+  const [locationUpdateInterval, setLocationUpdateInterval] = useState(null);
+  const [autoCheckInOutLoading, setAutoCheckInOutLoading] = useState(false);
+  const [indoorMapVisible, setIndoorMapVisible] = useState(false);
 
-  // Student is considered checked in if userStatus === 'checked-in'
-  const isCheckedIn = userStatus === 'checked-in';
-
-  useEffect(() => {
-    if (userData && userData.uid) {
-      fetchSupervisorInfo();
-      fetchCurrentVisit();
-      fetchVisitHistory();
-      startAnimations();
+  // Get location name from beacon minor value
+  const getLocationName = (minor) => {
+    switch (minor) {
+      case 1:
+        return 'Cafeteria';
+      case 2:
+        return 'Office';
+      case 3:
+        return 'Main Area';
+      default:
+        return `Area ${minor}`;
     }
-  }, [userData]);
-
-  useEffect(() => {
-    if (isCheckedIn && !studentLocation) {
-      setMapLocationLoading(true);
-      (async () => {
-        const coords = await requestAndFetchLocation();
-        if (coords) setStudentLocation(coords);
-        setMapLocationLoading(false);
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCheckedIn]);
-
-  const startAnimations = () => {
-    // Status pulse animation
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
-
-    // Emergency pulse animation
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(emergencyPulse, {
-          toValue: 1.2,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-        Animated.timing(emergencyPulse, {
-          toValue: 1,
-          duration: 600,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
   };
 
-  const fetchSupervisorInfo = async () => {
-    if (!userData?.supervisorCode) {
-      return;
+  // Filter beacons to only show target beacons
+  const targetBeacons = beacons.filter(beacon => {
+    if (beacon.type === 'iBeacon') {
+      return beacon.uuid === TARGET_UUID && beacon.major === TARGET_MAJOR;
     }
-    
+    return false;
+  });
+
+  // Start location tracking with BLE
+  const startLocationTracking = async () => {
     try {
-      const supervisorsQuery = query(
-        collection(db, 'users'),
-        where('role', '==', 'supervisor'),
-        where('supervisorCode', '==', userData.supervisorCode)
-      );
-      const querySnapshot = await getDocs(supervisorsQuery);
-      
-      if (!querySnapshot.empty) {
-        const supervisorData = querySnapshot.docs[0].data();
-        setSupervisorInfo({
-          fullName: supervisorData.fullName,
-          code: userData.supervisorCode,
-          email: supervisorData.email
-        });
+      if (!isTracking) {
+        await startTracking();
       }
     } catch (error) {
-      console.error('fetchSupervisorInfo error:', error);
-      ErrorHandler.logError(error, {
-        action: 'fetchSupervisorInfo',
-        userId: userData?.uid
-      }, ERROR_SEVERITY.LOW);
+      console.error('Failed to start location tracking:', error);
+      Alert.alert('Error', 'Failed to start location tracking');
     }
   };
 
-  const fetchCurrentVisit = async () => {
-    if (!userData?.uid) {
-      setLoading(false);
-      return;
-    }
+  // Stop location tracking
+  const stopLocationTracking = async () => {
     try {
-      const visitsQuery = query(
-        collection(db, 'visits'),
-        where('assignedStudents', 'array-contains', userData.uid)
-      );
-      const querySnapshot = await getDocs(visitsQuery);
-      let activeVisit = null;
-      let foundCheckedIn = false;
-      querySnapshot.forEach((doc) => {
-        const visitData = { id: doc.id, ...doc.data() };
-        const visitDate = new Date(visitData.dateTime);
-        const now = new Date();
-        const isToday = visitDate.toDateString() === now.toDateString();
-        if (isToday) {
-          const attendance = visitData.attendance || {};
-          const checkedIn = attendance.checkedIn || [];
-          const checkedOut = attendance.checkedOut || [];
-          // Only set as active if checked in and not checked out
-          if (checkedIn.includes(userData.uid) && !checkedOut.includes(userData.uid)) {
-            activeVisit = visitData;
-            foundCheckedIn = true;
-            setUserStatus('checked-in');
-          } else if (checkedOut.includes(userData.uid)) {
-            setUserStatus('checked-out');
+      if (isTracking) {
+        await stopTracking();
+          }
+        } catch (error) {
+      console.error('Failed to stop location tracking:', error);
+    }
+  };
+
+  // Request location permissions
+  const requestLocationPermissions = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      setLocationPermission(status);
+      return status === 'granted';
+    } catch (error) {
+      console.error('Error requesting location permissions:', error);
+      return false;
+    }
+  };
+
+  // Start animations
+  const startAnimations = () => {
+    // Animation logic can be added here if needed
+  };
+
+  // Fetch supervisor information
+  const fetchSupervisorInfo = async () => {
+    try {
+      const userDoc = await getDoc(doc(db, 'users', userData.uid));
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        if (userData.supervisorId) {
+          const supervisorDoc = await getDoc(doc(db, 'users', userData.supervisorId));
+          if (supervisorDoc.exists()) {
+            setSupervisorInfo(supervisorDoc.data());
           }
         }
-      });
-      setCurrentVisit(foundCheckedIn ? activeVisit : null);
-      if (!foundCheckedIn) setUserStatus('not-in-visit');
+      }
     } catch (error) {
-      console.error('fetchCurrentVisit error:', error);
-      ErrorHandler.logError(error, {
-        action: 'fetchCurrentVisit',
-        userId: userData?.uid
-      }, ERROR_SEVERITY.MEDIUM);
-    } finally {
-      setLoading(false);
+      console.error('Error fetching supervisor info:', error);
     }
   };
 
-  const fetchVisitHistory = async () => {
-    if (!userData?.uid) {
-      return;
+  // Fetch all supervisors
+  const fetchAllSupervisors = async () => {
+    try {
+          const supervisorsQuery = query(
+            collection(db, 'users'),
+        where('role', '==', 'supervisor')
+          );
+          const querySnapshot = await getDocs(supervisorsQuery);
+          const supervisorsList = [];
+          querySnapshot.forEach((doc) => {
+            supervisorsList.push({
+              id: doc.id,
+          ...doc.data()
+            });
+          });
+          setSupervisors(supervisorsList);
+    } catch (error) {
+      console.error('Error fetching supervisors:', error);
     }
-    
+  };
+
+  // Fetch current visit
+  const fetchCurrentVisit = async () => {
     try {
       const visitsQuery = query(
         collection(db, 'visits'),
-        where('assignedStudents', 'array-contains', userData.uid)
+        where('studentId', '==', userData.uid),
+        where('status', 'in', ['active', 'checked-in'])
       );
-      
       const querySnapshot = await getDocs(visitsQuery);
-      const visits = [];
-      
-      querySnapshot.forEach((doc) => {
-        const visitData = { id: doc.id, ...doc.data() };
-        visits.push(visitData);
-      });
-      
-      // Sort by date, most recent first
-      visits.sort((a, b) => new Date(b.dateTime) - new Date(a.dateTime));
-      setVisitHistory(visits.slice(0, 5)); // Show last 5 visits
+      if (!querySnapshot.empty) {
+        const visitDoc = querySnapshot.docs[0];
+        setCurrentVisit({
+          id: visitDoc.id,
+          ...visitDoc.data()
+        });
+            setUserStatus('checked-in');
+      } else {
+        setCurrentVisit(null);
+        setUserStatus('not-in-visit');
+          }
     } catch (error) {
-      ErrorHandler.logError(error, {
-        action: 'fetchVisitHistory',
-        userId: userData?.uid
-      }, ERROR_SEVERITY.LOW);
+      console.error('Error fetching current visit:', error);
     }
   };
 
+  // Fetch visit history
+  const fetchVisitHistory = async () => {
+    try {
+      const visitsQuery = query(
+        collection(db, 'visits'),
+        where('studentId', '==', userData.uid),
+        where('status', '==', 'completed')
+      );
+      const querySnapshot = await getDocs(visitsQuery);
+      const history = [];
+      querySnapshot.forEach((doc) => {
+        history.push({
+          id: doc.id,
+          ...doc.data()
+        });
+      });
+      setVisitHistory(history);
+    } catch (error) {
+      console.error('Error fetching visit history:', error);
+    }
+  };
+
+  // Fetch assigned visit
+  const fetchAssignedVisit = async () => {
+    try {
+      const visitsQuery = query(
+        collection(db, 'visits'),
+        where('studentId', '==', userData.uid),
+        where('status', '==', 'assigned')
+      );
+      const querySnapshot = await getDocs(visitsQuery);
+      if (!querySnapshot.empty) {
+        const visitDoc = querySnapshot.docs[0];
+        setAssignedVisit({
+          id: visitDoc.id,
+          ...visitDoc.data()
+        });
+      } else {
+        setAssignedVisit(null);
+      }
+    } catch (error) {
+      console.error('Error fetching assigned visit:', error);
+    }
+  };
+
+  // Request and fetch location
   const requestAndFetchLocation = async () => {
     try {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      setLocationPermission(status);
-      if (status !== 'granted') {
-        Alert.alert('Permission Denied', 'Location permission is required to check in.');
-        return null;
+      setMapLocationLoading(true);
+      const hasPermission = await requestLocationPermissions();
+      if (hasPermission) {
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High
+        });
+        setStudentLocation(location);
       }
-      let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      return location.coords;
     } catch (error) {
-      ErrorHandler.logError(error, { action: 'getStudentLocation' }, ERROR_SEVERITY.MEDIUM);
-      Alert.alert('Error', 'Failed to get your location.');
-      return null;
+      console.error('Error getting location:', error);
+    } finally {
+      setMapLocationLoading(false);
     }
   };
 
+  // Calculate distance between two points
   const getDistance = (lat1, lon1, lat2, lon2) => {
     function toRad(x) { return x * Math.PI / 180; }
-    const R = 6371000; // meters
+    const R = 6371; // Earth's radius in km
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   };
 
+  // Handle check in
   const handleCheckIn = async () => {
-    if (!currentVisit || !userData?.uid) return;
-    setActionLoading(true);
-    try {
-      // Get student location
-      const coords = await requestAndFetchLocation();
-      if (!coords) { setActionLoading(false); return; }
-      setStudentLocation(coords);
-      // Get visit location
-      const visitCoords = currentVisit.locationCoordinates;
-      if (!visitCoords) {
-        Alert.alert('Error', 'Visit location coordinates not set.');
-        setActionLoading(false);
-        return;
-      }
-      console.log('Student coordinates:', coords);
-      console.log('Visit coordinates:', visitCoords);
-      // Calculate distance
-      const distance = getDistance(coords.latitude, coords.longitude, visitCoords.latitude, visitCoords.longitude);
-      console.log('Distance between student and visit (meters):', distance);
-      if (distance > 500) {
-        Alert.alert('Out of Range', 'You are not within 500 meters of the visit location.');
-        setActionLoading(false);
-        return;
-      }
-      // Proceed with check-in
-      const visitRef = doc(db, 'visits', currentVisit.id);
-      const now = new Date().toISOString();
-      await updateDoc(visitRef, {
-        'attendance.checkedIn': arrayUnion(userData.uid),
-        'attendance.absent': arrayRemove(userData.uid),
-        [`attendance.checkInTimes.${userData.uid}`]: now
-      });
-      await updateDoc(doc(db, 'users', userData.uid), {
-        lastKnownLocation: {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          timestamp: now
-        }
-      });
-      setUserStatus('checked-in');
-      Alert.alert('Success', 'You have successfully checked in!');
-      fetchCurrentVisit();
-    } catch (error) {
-      ErrorHandler.logError(error, { action: 'checkIn', visitId: currentVisit.id, userId: userData?.uid }, ERROR_SEVERITY.MEDIUM);
-      Alert.alert('Error', 'Failed to check in. Please try again.');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleCheckOut = async () => {
-    if (!currentVisit || !userData?.uid) return;
+    if (!currentVisit) return;
     
     setActionLoading(true);
     try {
       const visitRef = doc(db, 'visits', currentVisit.id);
-      const now = new Date().toISOString();
-      
       await updateDoc(visitRef, {
-        'attendance.checkedOut': arrayUnion(userData.uid),
-        'attendance.checkedIn': arrayRemove(userData.uid),
-        [`attendance.checkOutTimes.${userData.uid}`]: now
+        status: 'checked-in',
+        checkInTime: new Date(),
+        checkInLocation: studentLocation ? {
+          latitude: studentLocation.coords.latitude,
+          longitude: studentLocation.coords.longitude
+        } : null
       });
       
-      setUserStatus('checked-out');
-      Alert.alert('Success', 'You have successfully checked out! Thank you for your visit.');
-      fetchCurrentVisit(); // Refresh visit data
-      
+      setUserStatus('checked-in');
+      Alert.alert('Success', 'Successfully checked in!');
     } catch (error) {
-      console.error('checkOut error:', error);
-      ErrorHandler.logError(error, {
-        action: 'checkOut',
-        visitId: currentVisit.id,
-        userId: userData?.uid
-      }, ERROR_SEVERITY.MEDIUM);
-      
-      Alert.alert('Error', 'Failed to check out. Please try again.');
+      console.error('Error checking in:', error);
+      Alert.alert('Error', 'Failed to check in');
     } finally {
       setActionLoading(false);
     }
   };
 
+  // Handle check out
+  const handleCheckOut = async () => {
+    if (!currentVisit) return;
+    
+    setActionLoading(true);
+    try {
+      const visitRef = doc(db, 'visits', currentVisit.id);
+      await updateDoc(visitRef, {
+        status: 'completed',
+        checkOutTime: new Date(),
+        checkOutLocation: studentLocation ? {
+          latitude: studentLocation.coords.latitude,
+          longitude: studentLocation.coords.longitude
+        } : null
+      });
+      
+      setUserStatus('not-in-visit');
+      setCurrentVisit(null);
+      Alert.alert('Success', 'Successfully checked out!');
+    } catch (error) {
+      console.error('Error checking out:', error);
+      Alert.alert('Error', 'Failed to check out');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Handle refresh
   const onRefresh = async () => {
     setRefreshing(true);
     await Promise.all([
-      fetchSupervisorInfo(),
       fetchCurrentVisit(),
-      fetchVisitHistory()
+      fetchVisitHistory(),
+      fetchAssignedVisit(),
+      fetchSupervisorInfo(),
+      fetchAllSupervisors(),
+      requestLocationPermissions(),
+      startLocationTracking()
     ]);
     setRefreshing(false);
   };
 
+  // Handle logout
   const handleLogout = async () => {
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Logout', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
+    try {
+      await stopLocationTracking();
               await signOut(auth);
-              await clearAuthState();
+      clearAuthState();
             } catch (error) {
-              ErrorHandler.logError(error, { 
-                action: 'studentLogout',
-                userId: userData?.uid 
-              }, ERROR_SEVERITY.MEDIUM);
-              
-              Alert.alert('Error', 'Failed to logout. Please try again.');
-            }
-          }
-        }
-      ]
-    );
+      console.error('Error logging out:', error);
+    }
   };
 
+  // Get status color
   const getStatusColor = () => {
     switch (userStatus) {
-      case 'checked-in': return '#4CAF50';
-      case 'checked-out': return '#2196F3';
-      default: return '#9E9E9E';
+      case 'checked-in':
+        return '#4CAF50';
+      case 'checked-out':
+        return '#FF9800';
+      default:
+        return '#9E9E9E';
     }
   };
 
+  // Get status text
   const getStatusText = () => {
     switch (userStatus) {
-      case 'checked-in': return 'Checked In';
-      case 'checked-out': return 'Visit Completed';
-      default: return 'Not in Visit';
+      case 'checked-in':
+        return 'Checked In';
+      case 'checked-out':
+        return 'Checked Out';
+      default:
+        return 'Not in Visit';
     }
   };
 
+  // Get status icon
   const getStatusIcon = () => {
     switch (userStatus) {
-      case 'checked-in': return '✅';
-      case 'checked-out': return '🏁';
-      default: return '⏸️';
+      case 'checked-in':
+        return 'check-circle';
+      case 'checked-out':
+        return 'exit-to-app';
+      default:
+        return 'schedule';
     }
   };
 
+  // Handle emergency
   const handleEmergency = () => {
-    setEmergencyMode(true);
-    // In a real app, this would trigger emergency protocols
+    setEmergencyMode(!emergencyMode);
     Alert.alert(
-      'Emergency Mode Activated',
-      'Your location is being shared with supervisors and emergency contacts have been notified.',
-      [
-        { text: 'Call Emergency Services', onPress: () => {} },
-        { text: 'Cancel Emergency', onPress: () => setEmergencyMode(false) }
-      ]
+      emergencyMode ? 'Emergency Mode Disabled' : 'Emergency Mode Enabled',
+      emergencyMode ? 'Emergency mode has been disabled.' : 'Emergency mode has been enabled. Your location will be shared with supervisors.'
     );
   };
 
+  // Handle join visit
   const handleJoinVisit = async () => {
-    if (isCheckedIn) {
-      Alert.alert('Already Checked In', 'You are already checked in to a visit. You cannot join another visit until you check out.');
+    if (!visitCode.trim()) {
+      Alert.alert('Error', 'Please enter a visit code');
       return;
     }
-    if (!visitCode || visitCode.length !== 6) {
-      Alert.alert('Invalid Code', 'Please enter a valid 6-digit visit code.');
-      return;
-    }
+
     setActionLoading(true);
     try {
-      // Find the visit with the given code, active, and today
-      const today = new Date();
-      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
       const visitsQuery = query(
         collection(db, 'visits'),
-        where('visitCode', '==', visitCode)
+        where('visitCode', '==', visitCode.trim())
       );
       const querySnapshot = await getDocs(visitsQuery);
+      
       if (querySnapshot.empty) {
-        Alert.alert('Invalid Code', 'No visit found with this code.');
-        setActionLoading(false);
+        Alert.alert('Error', 'Invalid visit code');
         return;
       }
-      let foundVisit = null;
-      querySnapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        const visitDate = new Date(data.dateTime);
-        if (
-          visitDate >= startOfDay &&
-          visitDate < endOfDay &&
-          data.status === 'active'
-        ) {
-          foundVisit = { id: docSnap.id, ...data };
-        }
+
+      const visitDoc = querySnapshot.docs[0];
+      const visitData = visitDoc.data();
+      
+      if (visitData.status !== 'active') {
+        Alert.alert('Error', 'This visit is not active');
+        return;
+      }
+
+      // Join the visit
+      await updateDoc(doc(db, 'visits', visitDoc.id), {
+        studentId: userData.uid,
+        status: 'checked-in',
+        checkInTime: new Date()
       });
-      if (!foundVisit) {
-        Alert.alert('Invalid Code', 'No active visit found for today with this code.');
-        setActionLoading(false);
-        return;
-      }
-      // Check if student is assigned
-      if (!foundVisit.assignedStudents.includes(userData.uid)) {
-        Alert.alert('Not Eligible', 'You are not assigned to this visit.');
-        setActionLoading(false);
-        return;
-      }
-      // Check if already checked in
-      if (foundVisit.attendance?.checkedIn?.includes(userData.uid)) {
-        Alert.alert('Already Joined', 'You have already joined this visit.');
-        setActionLoading(false);
-        return;
-      }
-      // --- LOCATION PERMISSION AND RANGE CHECK ---
-      // Request location permission and fetch student location
-      const coords = await requestAndFetchLocation();
-      if (!coords) { setActionLoading(false); return; }
-      setStudentLocation(coords);
-      // Get visit location
-      const visitCoords = foundVisit.locationCoordinates;
-      if (!visitCoords) {
-        Alert.alert('Error', 'Visit location coordinates not set.');
-        setActionLoading(false);
-        return;
-      }
-      console.log('Student coordinates:', coords);
-      console.log('Visit coordinates:', visitCoords);
-      // Calculate distance
-      const distance = getDistance(coords.latitude, coords.longitude, visitCoords.latitude, visitCoords.longitude);
-      console.log('Distance between student and visit (meters):', distance);
-      if (distance > 500) {
-        Alert.alert('Out of Range', 'You are not within 500 meters of the visit location.');
-        setActionLoading(false);
-        return;
-      }
-      // Add student to checkedIn and remove from absent
-      const visitRef = doc(db, 'visits', foundVisit.id);
-      const now = new Date().toISOString();
-      await updateDoc(visitRef, {
-        'attendance.checkedIn': arrayUnion(userData.uid),
-        'attendance.absent': arrayRemove(userData.uid),
-        [`attendance.checkInTimes.${userData.uid}`]: now
+
+      setCurrentVisit({
+        id: visitDoc.id,
+        ...visitData
       });
-      await updateDoc(doc(db, 'users', userData.uid), {
-        lastKnownLocation: {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          timestamp: now
-        }
-      });
-      setCurrentVisit(foundVisit);
       setUserStatus('checked-in');
       setVisitCode('');
-      Alert.alert('Success', 'You have joined and checked in to the visit!');
-      fetchCurrentVisit();
+      Alert.alert('Success', 'Successfully joined the visit!');
     } catch (error) {
-      ErrorHandler.logError(error, {
-        action: 'joinVisitByCode',
-        userId: userData?.uid,
-        visitCode
-      }, ERROR_SEVERITY.MEDIUM);
-      Alert.alert('Error', 'Failed to join visit. Please try again.');
+      console.error('Error joining visit:', error);
+      Alert.alert('Error', 'Failed to join visit');
     } finally {
       setActionLoading(false);
     }
   };
 
+  // Get connection status
   const getConnectionStatus = () => {
-    // Only GPS and Network status as requested
-    return {
-      gps: { status: 'Strong', color: '#10B981', icon: 'gps-fixed' },
-      network: { status: 'Connected', color: '#10B981', icon: 'wifi' }
-    };
-  };
-
-  const getStatusBadgeStyle = (status) => {
-    switch (status) {
-      case 'checked-in':
-        return { backgroundColor: '#DCFCE7', borderColor: '#10B981', color: '#166534' };
-      case 'checked-out':
-        return { backgroundColor: '#DBEAFE', borderColor: '#3B82F6', color: '#1E40AF' };
-      case 'emergency':
-        return { backgroundColor: '#FEE2E2', borderColor: '#EF4444', color: '#991B1B' };
-      default:
-        return { backgroundColor: '#F3F4F6', borderColor: '#9CA3AF', color: '#374151' };
+    if (bluetoothState === 'PoweredOn' && isTracking) {
+      return 'Connected';
+    } else if (bluetoothState === 'PoweredOn') {
+      return 'Ready';
+    } else {
+      return 'Disconnected';
     }
   };
 
-  // Renders the Join Visit card if the user is not checked in
-  const shouldShowJoinVisitCard = userStatus === 'not-in-visit';
+  // Get status badge style
+  const getStatusBadgeStyle = (status) => {
+    switch (status) {
+      case 'Connected':
+        return styles.statusBadgeConnected;
+      case 'Ready':
+        return styles.statusBadgeReady;
+      default:
+        return styles.statusBadgeDisconnected;
+    }
+  };
 
-  // Early return if userData is not available
-  if (!userData) {
-    return (
-      <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Loading user data...</Text>
+  // Handle assigned visit check in
+  const handleAssignedVisitCheckIn = async (visit) => {
+    setActionLoading(true);
+    try {
+      const visitRef = doc(db, 'visits', visit.id);
+      await updateDoc(visitRef, {
+        status: 'checked-in',
+        checkInTime: new Date(),
+        checkInLocation: studentLocation ? {
+          latitude: studentLocation.coords.latitude,
+          longitude: studentLocation.coords.longitude
+        } : null
+      });
+      
+      setCurrentVisit({
+        id: visit.id,
+        ...visit
+      });
+      setAssignedVisit(null);
+      setUserStatus('checked-in');
+      Alert.alert('Success', 'Successfully checked in to assigned visit!');
+    } catch (error) {
+      console.error('Error checking in to assigned visit:', error);
+      Alert.alert('Error', 'Failed to check in');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Handle join supervisor
+  const handleJoinSupervisor = async () => {
+    if (!supervisorCode.trim()) {
+      Alert.alert('Error', 'Please enter a supervisor code');
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const supervisorsQuery = query(
+        collection(db, 'users'),
+        where('role', '==', 'supervisor'),
+        where('supervisorCode', '==', supervisorCode.trim())
+      );
+      const querySnapshot = await getDocs(supervisorsQuery);
+      
+      if (querySnapshot.empty) {
+        Alert.alert('Error', 'Invalid supervisor code');
+        return;
+      }
+
+      const supervisorDoc = querySnapshot.docs[0];
+      
+      // Update user's supervisor
+      await updateDoc(doc(db, 'users', userData.uid), {
+        supervisorId: supervisorDoc.id
+      });
+
+      setSupervisorInfo(supervisorDoc.data());
+      setSupervisorCode('');
+      Alert.alert('Success', 'Successfully joined supervisor!');
+    } catch (error) {
+      console.error('Error joining supervisor:', error);
+      Alert.alert('Error', 'Failed to join supervisor');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Initialize data on mount
+  useEffect(() => {
+    const initializeData = async () => {
+      setLoading(true);
+      try {
+        await Promise.all([
+          fetchCurrentVisit(),
+          fetchVisitHistory(),
+          fetchAssignedVisit(),
+          fetchSupervisorInfo(),
+          fetchAllSupervisors(),
+          requestLocationPermissions(),
+          startLocationTracking()
+        ]);
+      } catch (error) {
+        console.error('Error initializing data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeData();
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopLocationTracking();
+    };
+  }, []);
+
+  // Render supervisors section
+  const renderSupervisorsSection = () => (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Join Supervisor</Text>
+      <View style={styles.inputContainer}>
+          <TextInput
+          style={styles.input}
+          placeholder="Enter supervisor code"
+            value={supervisorCode}
+          onChangeText={setSupervisorCode}
+        />
+        <TouchableOpacity
+          style={[styles.button, actionLoading && styles.buttonDisabled]}
+          onPress={handleJoinSupervisor}
+          disabled={actionLoading}
+        >
+          <Text style={styles.buttonText}>Join</Text>
+        </TouchableOpacity>
       </View>
-    );
-  }
-
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Loading visits...</Text>
-      </View>
-    );
-  }
-
-  const renderHeader = () => (
-    <View style={styles.modernHeader}>
-      <View style={styles.headerContent}>
-        <View style={styles.headerTop}>
-          <View style={styles.logoContainer}>
-            <View style={styles.logo}>
-              <Icon name="location-on" size={18} color="#FFFFFF" />
-            </View>
-            <View style={styles.headerText}>
-              <Text style={styles.headerTitle}>Student Tracker</Text>
-              <Text style={styles.headerSubtitle}>Stay connected during visits</Text>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.logoutIconButton} onPress={handleLogout}>
-            <Icon name="logout" size={16} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-
-  const renderWelcomeSection = () => (
-    <View style={styles.welcomeCard}>
-      <Text style={styles.welcomeCardText}>
-        Welcome, {userData?.fullName?.split(' ')[0] || 'Student'} 👋
-        </Text>
+      
         {supervisorInfo && (
-        <Text style={styles.supervisorCardText}>
-            Supervisor: {supervisorInfo.fullName}
-          </Text>
-        )}
+        <View style={styles.supervisorInfo}>
+          <Text style={styles.supervisorName}>{supervisorInfo.name}</Text>
+          <Text style={styles.supervisorEmail}>{supervisorInfo.email}</Text>
       </View>
-  );
-
-  const renderEmergencyOverlay = () => (
-    <Modal visible={emergencyMode} animationType="fade" transparent={false}>
-      <View style={styles.emergencyOverlay}>
-        <StatusBar barStyle="light-content" backgroundColor="#DC2626" />
-        <View style={styles.emergencyContent}>
-          <Animated.View style={[styles.emergencyIcon, { transform: [{ scale: emergencyPulse }] }]}>
-            <Icon name="warning" size={64} color="#FFFFFF" />
-          </Animated.View>
-          
-          <Text style={styles.emergencyTitle}>EMERGENCY MODE ACTIVE</Text>
-          <Text style={styles.emergencyText}>Your location is being shared with supervisors</Text>
-          <Text style={styles.emergencySubtext}>Emergency contacts have been notified</Text>
-
-          <View style={styles.emergencyActions}>
-            <TouchableOpacity 
-              style={styles.emergencyCallButton}
-              onPress={() => Alert.alert('Emergency Services', 'This would call emergency services in a real app')}
-            >
-              <Icon name="phone" size={18} color="#DC2626" />
-              <Text style={styles.emergencyCallText}>Call Emergency Services</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={styles.emergencyCancelButton}
-              onPress={() => setEmergencyMode(false)}
-            >
-              <Text style={styles.emergencyCancelText}>Cancel Emergency</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-
-  const renderStatusCard = () => {
-    const isInVisit = currentVisit && userStatus !== 'not-in-visit';
-    const statusStyle = getStatusBadgeStyle(userStatus);
-    
-    return (
-      <View style={[
-        styles.statusCard, 
-        isInVisit ? styles.statusCardActive : styles.statusCardInactive
-      ]}>
-        <View style={styles.statusContent}>
-          <Animated.View style={[
-            styles.statusIndicator,
-            { 
-              backgroundColor: statusStyle.color,
-              transform: isInVisit ? [{ scale: pulseAnim }] : []
-            }
-          ]}>
-            <Icon 
-              name={isInVisit ? "location-on" : "location-off"} 
-              size={28} 
-              color="#FFFFFF" 
-            />
-          </Animated.View>
-
-          <View style={styles.statusTextContainer}>
-            <Text style={styles.statusTitle}>
-              {isInVisit ? "Currently in Visit" : "Not in Visit"}
-            </Text>
-            <Text style={styles.statusDescription}>
-              {isInVisit ? 
-                (currentVisit?.purpose || "Factory Tour - Group A") : 
-                "Join a visit to start tracking"
-              }
-            </Text>
-          </View>
-        </View>
-
-        {isInVisit && (
-          <View style={styles.statusInfo}>
-            <View style={styles.statusInfoItem}>
-              <Icon name="schedule" size={14} color="#6B7280" />
-              <Text style={styles.statusInfoText}>2h 15m</Text>
-            </View>
-            <View style={styles.statusInfoItem}>
-              <Icon name="signal-cellular-4-bar" size={14} color="#10B981" />
-              <Text style={styles.statusInfoText}>Strong Signal</Text>
-            </View>
-          </View>
         )}
       </View>
     );
-  };
 
-  const renderJoinVisitCard = () => {
-    return (
-      <View style={styles.joinVisitCard}>
-        <View style={styles.cardHeader}>
-          <Icon name="qr-code-scanner" size={18} color="#1F2937" />
-          <Text style={styles.cardTitle}>Join Visit</Text>
-        </View>
-        <View style={styles.visitCodeContainer}>
-          <Text style={styles.visitCodeLabel}>Visit Code</Text>
-          <View style={styles.visitCodeInputContainer}>
-            <TextInput
-              style={styles.visitCodeInput}
-              placeholder="Enter 6-digit code"
-              value={visitCode}
-              onChangeText={setVisitCode}
-              maxLength={6}
-              keyboardType="numeric"
-              textAlign="center"
-              editable={!isCheckedIn}
-            />
-          </View>
-          <TouchableOpacity
-            style={[
-              styles.joinButton,
-              visitCode.length === 6 && !isCheckedIn ? styles.joinButtonActive : styles.joinButtonInactive
-            ]}
-            onPress={handleJoinVisit}
-            disabled={visitCode.length !== 6 || isCheckedIn}
-          >
-            <Text style={[
-              styles.joinButtonText,
-              visitCode.length === 6 && !isCheckedIn ? styles.joinButtonTextActive : styles.joinButtonTextInactive
-            ]}>
-              {isCheckedIn ? 'Already Checked In' : 'Join Visit'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  };
-
-  const renderVisitCard = () => {
-    if (!currentVisit) return null;
+  // Render assigned visit section
+  const renderAssignedVisitSection = () => {
+    if (!assignedVisit) return null;
 
     return (
-      <View style={styles.modernVisitCard}>
-        <View style={styles.cardHeader}>
-          <Icon name="event" size={18} color="#1F2937" />
-          <Text style={styles.cardTitle}>Today's Visit</Text>
-        </View>
-
-        <View style={styles.visitCardContent}>
-          <View style={styles.visitDetailRow}>
-            <Icon name="location-on" size={16} color="#6B7280" />
-            <Text style={styles.visitDetailText}>
-              {currentVisit.location || "Industrial Facility"}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Assigned Visit</Text>
+        <View style={styles.visitCard}>
+          <Text style={styles.visitTitle}>{assignedVisit.title}</Text>
+          <Text style={styles.visitDescription}>{assignedVisit.description}</Text>
+          <Text style={styles.visitTime}>
+            {new Date(assignedVisit.scheduledTime?.toDate()).toLocaleString()}
             </Text>
-          </View>
-          
-          <View style={styles.visitDetailRow}>
-            <Icon name="schedule" size={16} color="#6B7280" />
-            <Text style={styles.visitDetailText}>
-              {currentVisit.dateTime ? 
-                new Date(currentVisit.dateTime).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit'
-                }) : "9:00 AM"
-              }
-            </Text>
-          </View>
-          
-          <View style={styles.visitDetailRow}>
-            <Icon name="description" size={16} color="#6B7280" />
-            <Text style={styles.visitDetailText}>
-              {currentVisit.purpose || "Educational Visit"}
-            </Text>
-          </View>
-        </View>
-            
-            {/* Action Buttons */}
-        <View style={styles.modernActionButtons}>
-              {userStatus === 'not-in-visit' && (
                 <TouchableOpacity
-              style={styles.modernCheckInButton}
-                  onPress={handleCheckIn}
+            style={[styles.button, actionLoading && styles.buttonDisabled]}
+            onPress={() => handleAssignedVisitCheckIn(assignedVisit)}
                   disabled={actionLoading}
                 >
-                  {actionLoading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <>
-                  <Icon name="check-circle" size={18} color="#FFFFFF" />
-                  <Text style={styles.modernActionButtonText}>Check In</Text>
-                    </>
-                  )}
+            <Text style={styles.buttonText}>Check In</Text>
                 </TouchableOpacity>
-              )}
-              
-              {userStatus === 'checked-in' && (
-                <TouchableOpacity
-              style={styles.modernCheckOutButton}
-                  onPress={handleCheckOut}
-                  disabled={actionLoading}
-                >
-                  {actionLoading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <>
-                  <Icon name="exit-to-app" size={18} color="#FFFFFF" />
-                  <Text style={styles.modernActionButtonText}>Check Out</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              )}
-              
-              {userStatus === 'checked-out' && (
-            <View style={styles.modernCompletedButton}>
-              <Icon name="done-all" size={18} color="#FFFFFF" />
-              <Text style={styles.modernActionButtonText}>Visit Completed</Text>
-                </View>
-              )}
             </View>
           </View>
     );
   };
 
+  // Render header
   const renderSystemStatus = () => {
     const connectionStatus = getConnectionStatus();
     
@@ -836,6 +679,49 @@ const UserTracker = ({ navigation }) => {
   const renderVisitHistory = () => {
     if (visitHistory.length === 0) return null;
 
+    const getVisitStatus = (visit) => {
+      const now = new Date();
+      const visitDate = new Date(visit.dateTime);
+      
+      // If visit is checked out, it's completed
+      if (visit.attendance?.checkedOut?.includes(userData.uid)) {
+        return {
+          text: 'Completed',
+          color: '#166534',
+          bgColor: '#DCFCE7',
+          borderColor: '#10B981'
+        };
+      }
+      
+      // If visit is checked in, it's active
+      if (visit.attendance?.checkedIn?.includes(userData.uid)) {
+        return {
+          text: 'Active',
+          color: '#1E40AF',
+          bgColor: '#DBEAFE',
+          borderColor: '#3B82F6'
+        };
+      }
+      
+      // If visit date is in the past and not checked in/out, it's missed
+      if (visitDate < now) {
+        return {
+          text: 'Missed',
+          color: '#991B1B',
+          bgColor: '#FEE2E2',
+          borderColor: '#EF4444'
+        };
+      }
+      
+      // If visit is in the future, it's upcoming
+      return {
+        text: 'Upcoming',
+        color: '#854D0E',
+        bgColor: '#FEF3C7',
+        borderColor: '#F59E0B'
+      };
+    };
+
     return (
       <View style={styles.historyCard}>
         <View style={styles.cardHeader}>
@@ -844,48 +730,47 @@ const UserTracker = ({ navigation }) => {
         </View>
         
         <View style={styles.historyList}>
-          {visitHistory.slice(0, 3).map((visit, index) => (
-            <View key={visit.id} style={styles.modernHistoryItem}>
-              <View style={styles.historyItemLeft}>
-                <Text style={styles.historyItemName}>
-                  {visit.location || 'Industrial Visit'}
-                </Text>
-                <Text style={styles.historyItemDate}>
-                  {visit.dateTime ? 
-                    new Date(visit.dateTime).toLocaleDateString() : 
-                    'Recent'
-                  }
-                </Text>
-              </View>
-              
-              <View style={styles.historyItemRight}>
-                <View style={[
-                  styles.historyStatusBadge,
-                  getStatusBadgeStyle(
-                    visit.attendance?.checkedOut?.includes(userData.uid) ? 'checked-out' :
-                    visit.attendance?.checkedIn?.includes(userData.uid) ? 'checked-in' : 'not-in-visit'
-                  )
-                ]}>
-                  <Text style={[
-                    styles.historyStatusText,
-                    { 
-                      color: visit.attendance?.checkedOut?.includes(userData.uid) ? '#166534' :
-                             visit.attendance?.checkedIn?.includes(userData.uid) ? '#1E40AF' : '#374151'
+          {visitHistory.slice(0, 3).map((visit) => {
+            const status = getVisitStatus(visit);
+            return (
+              <View key={visit.id} style={styles.modernHistoryItem}>
+                <View style={styles.historyItemLeft}>
+                  <Text style={styles.historyItemName}>
+                    {visit.location || 'Industrial Visit'}
+                  </Text>
+                  <Text style={styles.historyItemDate}>
+                    {visit.dateTime ? 
+                      new Date(visit.dateTime).toLocaleDateString() : 
+                      'Recent'
                     }
-                  ]}>
-                    {visit.attendance?.checkedOut?.includes(userData.uid) ? 'Completed' :
-                     visit.attendance?.checkedIn?.includes(userData.uid) ? 'Attended' : 'Missed'}
                   </Text>
                 </View>
+                
+                <View style={styles.historyItemRight}>
+                  <View style={[
+                    styles.historyStatusBadge,
+                    {
+                      backgroundColor: status.bgColor,
+                      borderColor: status.borderColor
+                    }
+                  ]}>
+                    <Text style={[
+                      styles.historyStatusText,
+                      { color: status.color }
+                    ]}>
+                      {status.text}
+                    </Text>
+                  </View>
+                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
         
-          <TouchableOpacity 
+        <TouchableOpacity 
           style={styles.viewAllButton}
-            onPress={() => navigation.navigate('VisitList')}
-          >
+          onPress={() => navigation.navigate('VisitList')}
+        >
           <Text style={styles.viewAllButtonText}>View All Visits</Text>
           <Icon name="arrow-forward" size={14} color="#2563EB" />
         </TouchableOpacity>
@@ -899,48 +784,149 @@ const UserTracker = ({ navigation }) => {
         <Icon name="dashboard" size={18} color="#1F2937" />
         <Text style={styles.cardTitle}>Quick Actions</Text>
       </View>
-      
       <View style={styles.quickActionsList}>
         <TouchableOpacity 
           style={styles.modernQuickAction}
           onPress={() => navigation.navigate('VisitList')}
         >
           <Icon name="list" size={20} color="#2563EB" />
-            <Text style={styles.quickActionText}>All Visits</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
+          <Text style={styles.quickActionText}>All Visits</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
           style={styles.modernQuickAction}
-            onPress={() => {
-              Alert.alert(
-                'Help & Support',
-                'Contact your supervisor for any assistance:\n\n' +
-                (supervisorInfo ? 
-                  `${supervisorInfo.fullName}\n${supervisorInfo.email}` : 
-                  'Supervisor information not available'
-                )
-              );
-            }}
-          >
+          onPress={() => {
+            Alert.alert(
+              'Help & Support',
+              'Contact your supervisor for any assistance:\n\n' +
+              (supervisorInfo ? 
+                `${supervisorInfo.fullName}\n${supervisorInfo.email}` : 
+                'Supervisor information not available'
+              )
+            );
+          }}
+        >
           <Icon name="help" size={20} color="#10B981" />
-            <Text style={styles.quickActionText}>Help</Text>
-          </TouchableOpacity>
-        </View>
-              </View>
+          <Text style={styles.quickActionText}>Help</Text>
+        </TouchableOpacity>
+        {/* New quick action: Indoor Tracking */}
+        <TouchableOpacity
+          style={styles.modernQuickAction}
+          onPress={() => setIndoorMapVisible(true)}
+        >
+          <Icon name="map" size={20} color="#8B5CF6" />
+          <Text style={styles.quickActionText}>Indoor Map</Text>
+        </TouchableOpacity>
+        {/* New quick action: BLE Debug */}
+        <TouchableOpacity
+          style={styles.modernQuickAction}
+          onPress={() => navigation.navigate('BleDebug')}
+        >
+          <Icon name="bluetooth" size={20} color="#F59E42" />
+          <Text style={styles.quickActionText}>BLE Debug</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 
   // Debug logs for map rendering
-  console.log('isCheckedIn:', isCheckedIn);
   console.log('userStatus:', userStatus);
   console.log('currentVisit:', currentVisit);
   console.log('currentVisit.locationCoordinates:', currentVisit?.locationCoordinates);
   console.log('studentLocation:', studentLocation);
   console.log('mapLocationLoading:', mapLocationLoading);
 
+  // Render beacon scanner
+  const renderBeaconScanner = () => (
+    <View style={styles.card}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+        <Icon name="bluetooth" size={20} color="#2563EB" />
+        <Text style={styles.cardTitle}>Beacon Scanner</Text>
+      </View>
+      <Text style={{ color: '#6B7280', fontSize: 12, marginBottom: 8 }}>
+        HoneyComm HCBB35 beacons detected via shared BLE service.
+      </Text>
+      
+      <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+        <TouchableOpacity
+          style={[
+            styles.beaconScanButton, 
+            isTracking 
+              ? styles.beaconScanButtonActive 
+              : styles.beaconScanButtonInactive
+          ]}
+          onPress={isTracking ? stopLocationTracking : startLocationTracking}
+        >
+          <Icon 
+            name={isTracking ? 'stop' : 'bluetooth-searching'} 
+            size={16} 
+            color="#FFFFFF" 
+          />
+          <Text style={styles.beaconScanButtonText}>
+            {isTracking ? 'Stop Tracking' : 'Start Tracking'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+      
+      {bleError && (
+        <Text style={{ color: '#DC2626', fontSize: 12, marginBottom: 8 }}>
+          {bleError}
+        </Text>
+      )}
+      
+      <View style={{ minHeight: 40 }}>
+        {targetBeacons.length === 0 && !isTracking && (
+          <Text style={{ color: '#9CA3AF', fontSize: 13, textAlign: 'center' }}>
+            {bleError ? 'Error tracking' : 'No target beacons detected yet.'}
+          </Text>
+        )}
+        
+        {targetBeacons.length > 0 && (
+          <View style={{ gap: 8 }}>
+            {targetBeacons.map((beacon) => (
+              <View key={`${beacon.minor}-${beacon.rssi}`} style={styles.beaconItem}>
+                <Icon name="bluetooth" size={16} color="#2563EB" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.beaconName}>
+                    {getLocationName(beacon.minor)}
+                  </Text>
+                  <Text style={styles.beaconId}>
+                    Minor: {beacon.minor} | RSSI: {beacon.rssi} dBm
+                  </Text>
+                  <Text style={styles.beaconId}>
+                    Distance: {beacon.distance?.toFixed(1)}m
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+        
+        {isTracking && targetBeacons.length === 0 && (
+          <View style={{ alignItems: 'center', marginTop: 8 }}>
+            <ActivityIndicator color="#2563EB" size="small" />
+            <Text style={{ color: '#2563EB', fontSize: 12, marginTop: 4 }}>
+              Tracking for HoneyComm beacons...
+            </Text>
+          </View>
+        )}
+        
+        {isTracking && targetBeacons.length > 0 && (
+          <Text style={{ 
+            color: '#10B981', 
+            fontSize: 12,
+            textAlign: 'center',
+            marginTop: 8
+          }}>
+            {targetBeacons.length} HoneyComm beacon{targetBeacons.length > 1 ? 's' : ''} detected
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
-      {renderHeader()}
       
       <ScrollView 
         style={styles.scrollContainer}
@@ -955,9 +941,10 @@ const UserTracker = ({ navigation }) => {
         }
         showsVerticalScrollIndicator={false}
       >
-        {renderWelcomeSection()}
+        {renderSupervisorsSection()}
+        {renderAssignedVisitSection()}
         {/* Show checked-in badge if student is checked in */}
-        {isCheckedIn && (
+        {userStatus === 'checked-in' && (
           <View style={{alignItems: 'center', marginBottom: 12}}>
             <View style={{backgroundColor: '#DCFCE7', borderRadius: 16, paddingVertical: 8, paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', gap: 8}}>
               <Icon name="check-circle" size={18} color="#10B981" />
@@ -965,10 +952,6 @@ const UserTracker = ({ navigation }) => {
             </View>
           </View>
         )}
-        {renderStatusCard()}
-        {/* Always show Join Visit card, but disable check-in if already checked in */}
-        {renderJoinVisitCard()}
-        {renderVisitCard()}
         {currentVisit && currentVisit.locationCoordinates && studentLocation && (
           <View style={{ height: 300, borderRadius: 16, overflow: 'hidden', marginVertical: 16 }}>
             <MapView
@@ -1014,11 +997,16 @@ const UserTracker = ({ navigation }) => {
           </View>
         )}
         {renderSystemStatus()}
+        {renderBeaconScanner()}
         {renderQuickActions()}
         {renderVisitHistory()}
       </ScrollView>
-
-      {renderEmergencyOverlay()}
+      
+      {/* Indoor Map Modal */}
+      <IndoorMapModal
+        visible={indoorMapVisible}
+        onClose={() => setIndoorMapVisible(false)}
+      />
     </SafeAreaView>
   );
 };
@@ -1606,6 +1594,411 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#2563EB',
+  },
+
+  // Assigned Visit Section
+  assignedVisitSection: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#2563EB',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
+  },
+  assignedVisitHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  assignedVisitTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1F2937',
+  },
+  assignedVisitsScrollContent: {
+    gap: 16,
+  },
+  assignedVisitCard: {
+    width: width - 32, // Full width minus padding
+    padding: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#2563EB',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
+  },
+  assignedVisitContent: {
+    gap: 16,
+  },
+  assignedVisitInfo: {
+    gap: 12,
+  },
+  assignedVisitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  assignedVisitText: {
+    fontSize: 14,
+    color: '#4B5563',
+    flex: 1,
+  },
+  assignedVisitButton: {
+    backgroundColor: '#2563EB',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 12,
+    gap: 8,
+  },
+  assignedVisitButtonDisabled: {
+    backgroundColor: '#9CA3AF',
+  },
+  assignedVisitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  // Auto Check-in Badge
+  autoCheckInBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginTop: 8,
+    gap: 4,
+    alignSelf: 'flex-start',
+  },
+  autoCheckInText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#166534',
+  },
+
+  // Visit Status Badge
+  visitStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginTop: 8,
+    gap: 4,
+    alignSelf: 'flex-start',
+  },
+  visitStatusText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#166534',
+  },
+  checkedOutBadge: {
+    backgroundColor: '#DBEAFE',
+  },
+  checkedOutText: {
+    color: '#1E40AF',
+  },
+
+  // Assigned Visit Pagination
+  assignedVisitPagination: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 16,
+    gap: 8,
+  },
+  paginationDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#9CA3AF',
+  },
+  paginationDotActive: {
+    backgroundColor: '#2563EB',
+  },
+
+  supervisorsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 2,
+        elevation: 2,
+      },
+    }),
+  },
+  supervisorsList: {
+    gap: 12,
+    marginBottom: 16,
+  },
+  supervisorItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  supervisorInfo: {
+    flex: 1,
+  },
+  supervisorName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1F2937',
+    marginBottom: 2,
+  },
+  supervisorEmail: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  supervisorCode: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  supervisorCodeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#2563EB',
+  },
+  joinSupervisorContainer: {
+    gap: 12,
+  },
+  joinSupervisorLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  joinSupervisorInputContainer: {
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 12,
+    backgroundColor: '#F9FAFB',
+  },
+  joinSupervisorInput: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 3,
+    color: '#1F2937',
+  },
+  joinSupervisorButton: {
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  joinSupervisorButtonActive: {
+    backgroundColor: '#2563EB',
+  },
+  joinSupervisorButtonInactive: {
+    backgroundColor: '#9CA3AF',
+  },
+  joinSupervisorButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+
+  noSupervisorsContainer: {
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 8,
+  },
+  noSupervisorsText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  noSupervisorsSubtext: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  supervisorHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  assignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 4,
+  },
+  assignedBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#166534',
+  },
+  supervisorStats: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 8,
+  },
+  statItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  statText: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  supervisorItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    padding: 16,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  supervisorInfo: {
+    flex: 1,
+    marginRight: 12,
+  },
+  supervisorName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1F2937',
+  },
+  supervisorEmail: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginTop: 2,
+  },
+  supervisorCode: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
+  },
+  supervisorCodeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#2563EB',
+  },
+  beaconScannerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 2,
+        elevation: 2,
+      },
+    }),
+  },
+  beaconScanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    gap: 8,
+  },
+  beaconScanButtonActive: {
+    backgroundColor: '#DC2626',
+  },
+  beaconScanButtonInactive: {
+    backgroundColor: '#2563EB',
+  },
+  beaconScanButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  beaconItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 6,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  beaconName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1F2937',
+  },
+  beaconId: {
+    fontSize: 11,
+    color: '#6B7280',
+  },
+  beaconRssi: {
+    fontSize: 11,
+    color: '#2563EB',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 8,
+  },
+  cardTitle: {
+    fontWeight: '600',
+    fontSize: 16,
+    color: '#1F2937',
   },
 });
 
