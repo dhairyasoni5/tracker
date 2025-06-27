@@ -1,0 +1,26 @@
+[
+    {
+      "uuid": "FDA50693-A4E2-4FB1-AFCF-C6EB07647825",
+      "major": 10835,
+      "minor": 210,
+      "roomId": "Room210",
+      "roomName": "Conference Room",
+      "svgPosition": { "x": 120, "y": 80 }
+    },
+    {
+      "uuid": "FDA50693-A4E2-4FB1-AFCF-C6EB07647825",
+      "major": 10835,
+      "minor": 201,
+      "roomId": "Room201",
+      "roomName": "Main Office",
+      "svgPosition": { "x": 60, "y": 150 }
+    },
+    {
+      "uuid": "FDA50693-A4E2-4FB1-AFCF-C6EB07647825",
+      "major": 10835,
+      "minor": 206,
+      "roomId": "Room206",
+      "roomName": "Lab",
+      "svgPosition": { "x": 200, "y": 200 }
+    }
+  ]

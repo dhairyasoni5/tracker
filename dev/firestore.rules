@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users Collection
+    match /users/{userId} {
+
+      // Allow user to read/write their own profile
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      // Admins can access any user document
+      allow read, write: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+
+      // Supervisors can get individual student documents with matching supervisorCode or supervisorCodes list
+      allow get: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' &&
+        resource.data.role == 'user' &&
+        (
+          (resource.data.supervisorCode != null &&
+            resource.data.supervisorCode == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.supervisorCode)
+          ||
+          (resource.data.supervisorCodes is list &&
+            resource.data.supervisorCodes.hasAny([
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.supervisorCode
+            ])
+          )
+        );
+
+      // Supervisors can list student documents (filter must be applied from frontend)
+      allow list: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor';
+
+      // Anyone can read supervisor info (used in registration)
+      allow read: if resource.data.role == 'supervisor';
+    }
+
+    // Visits Collection
+    match /visits/{visitId} {
+
+      // Admins can do anything
+      allow read, write: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+
+      // Supervisors can create new visits
+      allow create: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor';
+
+      // Supervisors can read/update/delete visits they created
+      allow read, update, delete: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' &&
+        resource.data.supervisorId == request.auth.uid;
+
+      // Students can read individual visit documents assigned to them
+      allow get: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        resource.data.studentId == request.auth.uid;
+
+      // Students can list their visits (for .where("studentId", "==", auth.uid))
+      allow list: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user';
+
+      // Students can update attendance field only in their own visit
+      allow update: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'user' &&
+        resource.data.studentId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attendance']);
+    }
+
+    // Locations Collection
+    match /locations/{locationId} {
+      // Supervisors and Admins can read locations
+      allow read: if request.auth != null &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor' ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    }
+
+    // Beacons Collection
+    match /beacons/{beaconId} {
+      // Allow any authenticated user to read beacons
+      allow read: if request.auth != null;
+      // No one can write beacons from the client
+      allow write: if false;
+    }
+  }
+}
