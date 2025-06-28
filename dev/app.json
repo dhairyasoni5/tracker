@@ -1,11 +1,13 @@
 {
   "expo": {
-    "name": "Industrial Visit Tracker",
+    "name": "BLE Indoor Tracker",
     "slug": "trackingappv2",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -13,23 +15,51 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.trackingappv2"
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FFFFFF"
       },
+      "package": "com.yourcompany.trackingappv2",
       "permissions": [
-        "android.permission.BLUETOOTH",
-        "android.permission.BLUETOOTH_ADMIN",
-        "android.permission.BLUETOOTH_CONNECT"
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT"
       ]
     },
     "web": {
-      "bundler": "metro"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+
+      "name": "BLE Indoor Tracker",
+      "shortName": "BLE Tracker",
+      "description": "Real-time indoor tracking using BLE beacons",
+      "lang": "en",
+      "scope": "/",
+      "startUrl": "/",
+      "display": "standalone",
+      "orientation": "portrait",
+      "themeColor": "#2563EB",
+      "backgroundColor": "#FFFFFF",
+      "categories": ["navigation", "productivity", "utilities"],
+      "screenshots": [
+        {
+          "src": "./assets/splash.png",
+          "sizes": "1280x720",
+          "type": "image/png",
+          "formFactor": "wide"
+        }
+      ]
     },
     "plugins": [
-      "react-native-ble-plx"
+      "expo-location",
+      "expo-dev-client"
     ],
     "extra": {
       "eas": {

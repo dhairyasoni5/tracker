@@ -2,31 +2,31 @@ import { MaterialIcons as Icon } from '@expo/vector-icons';
 import { Picker } from '@react-native-picker/picker';
 import { signOut } from 'firebase/auth';
 import {
-    arrayUnion,
-    collection,
-    doc,
-    getDocs,
-    onSnapshot,
-    query,
-    updateDoc,
-    where
+  arrayUnion,
+  collection,
+  doc,
+  getDocs,
+  onSnapshot,
+  query,
+  updateDoc,
+  where
 } from 'firebase/firestore';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    FlatList,
-    Modal,
-    Platform,
-    RefreshControl,
-    SafeAreaView,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Modal,
+  Platform,
+  RefreshControl,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import Svg, { G, Path, Rect } from 'react-native-svg';
