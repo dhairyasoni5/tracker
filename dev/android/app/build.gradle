@@ -83,9 +83,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.yourcompany.trackingappv2"
+    namespace "com.bleindoortracker"
     defaultConfig {
-        applicationId "com.yourcompany.trackingappv2"
+        applicationId "com.bleindoortracker"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

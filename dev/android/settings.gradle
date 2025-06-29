@@ -1,4 +1,4 @@
-rootProject.name = 'IndustrialVisitTracker'
+rootProject.name = 'BLEIndoorTracker'
 
 dependencyResolutionManagement {
   versionCatalogs {
