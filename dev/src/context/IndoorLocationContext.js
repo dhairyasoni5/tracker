@@ -5,6 +5,7 @@ import { BeaconParser } from '../utils/BeaconParser';
 import { KalmanFilter } from '../utils/KalmanFilter';
 import { CoordinateMapper } from '../utils/CoordinateMapper';
 import { BeaconConfigManager } from '../config/beaconConfig';
+import { getFirestore, doc, updateDoc } from 'firebase/firestore';
 
 // Action types
 const ACTIONS = {
@@ -446,3 +447,14 @@ export const useIndoorLocation = () => {
 };
 
 export default IndoorLocationContext;
+
+/**
+ * Updates the student's nearestBeacon in Firestore for real-time BLE tracking.
+ * @param {string} userId - The student's UID
+ * @param {object} beacon - The nearest beacon object (should include roomId, roomName, svgPosition, etc)
+ */
+export async function updateNearestBeacon(userId, beacon) {
+  const db = getFirestore();
+  const userRef = doc(db, 'users', userId);
+  await updateDoc(userRef, { nearestBeacon: beacon });
+}

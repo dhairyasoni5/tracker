@@ -1,0 +1,178 @@
+{
+  "beacons": [
+    {
+      "id": "201",
+      "data": {
+        "uuid": "FDA50693-A4E2-4FB1-AFCF-C6EB07647825",
+        "major": 10835,
+        "minor": 201,
+        "roomId": "Room201",
+        "roomName": "Main Office",
+        "svgPosition": {
+          "x": 60,
+          "y": 150
+        }
+      }
+    },
+    {
+      "id": "206",
+      "data": {
+        "uuid": "FDA50693-A4E2-4FB1-AFCF-C6EB07647825",
+        "major": 10835,
+        "minor": 206,
+        "roomId": "Room206",
+        "roomName": "Lab",
+        "svgPosition": {
+          "x": 200,
+          "y": 200
+        }
+      }
+    }
+  ],
+  "locations": [
+    {
+      "id": "Fj0lf29PxGxfUUAeTc9v",
+      "data": {
+        "name": "CG",
+        "latitude": 23.02997912317045,
+        "longitude": 72.55575642230995
+      }
+    },
+    {
+      "id": "V3AJUveRR03gzMC2vyid",
+      "data": {
+        "createdAt": "2025-06-13T07:09:04.887Z",
+        "latitude": 22.3278058,
+        "name": "home-dh",
+        "longitude": 73.2405992
+      }
+    }
+  ],
+  "users": [
+    {
+      "id": "0ICTCj7108UAb15CHqPzOD3khvV2",
+      "data": {
+        "uid": "0ICTCj7108UAb15CHqPzOD3khvV2",
+        "email": "dhairya@trackingapp.com",
+        "fullName": "dhairya",
+        "role": "admin",
+        "createdAt": "2025-05-29T19:47:06.096Z",
+        "isActive": true
+      }
+    },
+    {
+      "id": "3ulcHlkUxdUsFHyHu0u5RYA5DRY2",
+      "data": {
+        "email": "student3@test.com",
+        "name": "Charlie Brown",
+        "role": "student",
+        "createdAt": {
+          "_seconds": 1748473408,
+          "_nanoseconds": 375000000
+        },
+        "supervisorId": "bTeIcosRCZUm3v9Dwha2ZNavKAl1"
+      }
+    }
+  ],
+  "visits": [
+    {
+      "id": "0QuWkAz1Wc7iSIRpjlDI",
+      "data": {
+        "supervisorCode": "9581",
+        "dateTime": "2025-06-06T09:36:34.378Z",
+        "location": "Thaltej Building",
+        "supervisorId": "xhlocDP0gChJdMMSB9RpQjGV4Fg2",
+        "notes": "Testttt",
+        "locationCoordinates": {
+          "longitude": 72.48998389532436,
+          "latitude": 23.051261273306693
+        },
+        "isAllDay": true,
+        "purpose": "Testt",
+        "visitCode": "765286",
+        "supervisorName": "sup3",
+        "assignedStudents": [
+          "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+          "Rld6xRcniIbWE9JiS8BlOP0s2Ht2",
+          "o5sMo80hLkMUDrhBGlfo",
+          "yygpCpeiVte5CT2k268x3d0VWih2"
+        ],
+        "title": "Testtt",
+        "createdAt": {
+          "_seconds": 1749202642,
+          "_nanoseconds": 555000000
+        },
+        "endTime": "2025-06-06T10:23:43.270Z",
+        "status": "completed",
+        "attendance": {
+          "absent": [
+            "o5sMo80hLkMUDrhBGlfo"
+          ],
+          "checkedOut": [
+            "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+            "yygpCpeiVte5CT2k268x3d0VWih2",
+            "Rld6xRcniIbWE9JiS8BlOP0s2Ht2"
+          ],
+          "checkedIn": [],
+          "endTime": "2025-06-06T10:23:43.270Z",
+          "checkOutTimes": [
+            {
+              "userId": "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+              "timestamp": "2025-06-06T10:12:55.567Z"
+            }
+          ],
+          "checkInTimes": [
+            {
+              "userId": "yygpCpeiVte5CT2k268x3d0VWih2",
+              "timestamp": "2025-06-06T09:38:06.474Z"
+            },
+            {
+              "userId": "Rld6xRcniIbWE9JiS8BlOP0s2Ht2",
+              "timestamp": "2025-06-06T09:38:05.532Z"
+            },
+            {
+              "userId": "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+              "timestamp": "2025-06-06T10:13:09.438Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "BCpaA8Tc50Q17onBEgoC",
+      "data": {
+        "title": "Demo visit",
+        "location": "Demo",
+        "purpose": "Demo",
+        "dateTime": "2025-06-02T13:09:06.062Z",
+        "isAllDay": true,
+        "notes": "Demo",
+        "supervisorId": "xhlocDP0gChJdMMSB9RpQjGV4Fg2",
+        "supervisorName": "sup3",
+        "supervisorCode": "9581",
+        "assignedStudents": [
+          "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+          "Rld6xRcniIbWE9JiS8BlOP0s2Ht2",
+          "yygpCpeiVte5CT2k268x3d0VWih2"
+        ],
+        "visitCode": "779023",
+        "createdAt": {
+          "_seconds": 1748869766,
+          "_nanoseconds": 863000000
+        },
+        "status": "completed",
+        "attendance": {
+          "checkedIn": [],
+          "checkedOut": [],
+          "absent": [
+            "ABZ3zmKsoTeEAkohsSjiZ9PhWDX2",
+            "Rld6xRcniIbWE9JiS8BlOP0s2Ht2",
+            "yygpCpeiVte5CT2k268x3d0VWih2"
+          ],
+          "checkOutTimes": [],
+          "checkInTimes": []
+        }
+      }
+    }
+  ]
+}

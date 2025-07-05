@@ -34,6 +34,14 @@ import LiveLocationMap from '../components/LiveLocationMap';
 import { auth, db } from '../firebase/firebaseConfig';
 import { useAuth } from '../utils/AuthContext';
 import ErrorHandler, { ERROR_SEVERITY } from '../utils/ErrorHandler';
+import BLEPermission from '../components/BLEPermission';
+import UserAvatar from '../components/UserAvatar';
+import { BEACON_DATA } from '../data/beacons';
+import { useIndoorTracking } from '../hooks/useIndoorTracking';
+import { Feather } from '@expo/vector-icons';
+import SvgPanZoom from 'react-native-svg-pan-zoom';
+import IndoorMap from '../components/IndoorMap';
+import { ROOM_DOT_POSITIONS } from '../components/IndoorMap';
 
 const { width, height } = Dimensions.get('window');
 
@@ -61,6 +69,13 @@ const SupervisorDashboard = ({ navigation }) => {
   const [beacons, setBeacons] = useState([]);
   const [studentsByRoom, setStudentsByRoom] = useState({});
   const [svgLoaded, setSvgLoaded] = useState(false);
+  const [indoorZoomModalVisible, setIndoorZoomModalVisible] = useState(false);
+  const [indoorMapScale, setIndoorMapScale] = useState(1);
+  const scrollViewRef = useRef(null);
+  const svgPanZoomRef = useRef(null);
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [selectedCluster, setSelectedCluster] = useState(null);
+  const [studentModalVisible, setStudentModalVisible] = useState(false);
 
   const visitsWithLocation = todayVisits
     .filter(v => v.locationCoordinates && v.status === 'active' && !v.endTime)
@@ -1250,214 +1265,6 @@ const SupervisorDashboard = ({ navigation }) => {
     </View>
   );
 
-  const renderIndoorTrackingMap = () => {
-    // SVG size from groundfloor.svg
-    const svgWidth = 784;
-    const svgHeight = 316;
-    
-    // Debug: Count students with beacon data
-    const studentsWithBeacons = students.filter(s => s.nearestBeacon);
-    const totalStudents = students.length;
-    
-    return (
-      <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 16 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <Text style={{ fontWeight: 'bold', fontSize: 16 }}>Indoor Tracking</Text>
-          <Text style={{ fontSize: 12, color: '#6B7280' }}>
-            {studentsWithBeacons.length}/{totalStudents} students tracked
-          </Text>
-        </View>
-        
-        <ScrollView horizontal contentContainerStyle={{ alignItems: 'center' }}>
-          <Svg width={svgWidth} height={svgHeight} viewBox={`0 0 ${svgWidth} ${svgHeight}`}> 
-            {/* --- Render the full SVG map --- */}
-            <G id="groundfloor">
-              <G id="room08">
-                <Path d="M324 244.5H221V310H303V286.5H324V244.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room14">
-                <Path d="M324 223V244.5V272.5H345V281.5H473.5V273H458.5V275.5H417V223H389H324Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room20">
-                <Path d="M324 272.5V286.5H303V310H388V281.5H345V272.5H324Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room21">
-                <Path d="M488.5 281.5H388V310H488.5V281.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room22">
-                <Path d="M531 281.5H488.5V310H573.5V286H552V273H531V281.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room29">
-                <Path d="M544 273V223H580.5V273H544Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room15">
-                <Path d="M458.5 223H487.5H544V273H531V281.5H473.5V273H458.5V223Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room18">
-                <Path d="M638.5 259.5H580.5V273H552V273.5V286H573.5V310H638.5V259.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room19">
-                <Path d="M778 310H638.5V259.5H778V310Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room28">
-                <Path d="M778 259.5H680.5L680 4H778V259.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room26">
-                <Path d="M580.5 127.5H525.5V157H580.5V127.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room13">
-                <Path d="M497 157H486.5M486.5 157V210H555.5V157H486.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room27">
-                <Path d="M555.5 157H580.5V210H555.5V157Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room25">
-                <Path d="M525.5 127.5H497V157H525.5V127.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room10">
-                <Path d="M280.5 226.5H239.5V244.5H280.5V226.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room16">
-                <Path d="M599.5 259.5V127.5H640V259.5H599.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room17">
-                <Path d="M680.5 127.5H640V259.5H680.5V127.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room11">
-                <Path d="M305.5 127.5H280.5V244.5H305.5V127.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room23">
-                <Path d="M351.5 157H319.5V127.5H351.5V157Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room24">
-                <Path d="M381 127.5V157H351.5V127.5H381Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room12">
-                <Path d="M319.5 209.5V157H389V209.5H319.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room07">
-                <Path d="M9.99998 262.781L43.1227 202.502L43.6246 202H221V310H29.0706C5.47376 294.241 2.92652 283.632 9.99998 262.781Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room09">
-                <Rect x="239.5" y="127.5" width="41" height="99" stroke="black" fill="#fff" />
-              </G>
-              <G id="room06">
-                <Path d="M221 126.5H157V180.5H221V126.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room05">
-                <Path d="M55.5 181L86.5 126.5H157V180.5L55.5 181Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room04">
-                <Path d="M680 4.5H491V103.5H472V113.5L680 113V4.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room03">
-                <Path d="M491 4.5H386V103.5H404.5V156.5H417V214.5H389V223H417V275.5H458.5V223H487.5V214.5H458.5V156.5H472V103.5H491V4.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room02">
-                <Path d="M386 4.5H221V6V113.5H386V4.5Z" stroke="black" fill="#fff" />
-              </G>
-              <G id="room01">
-                <Path d="M156 4.5L94 113.5H221V112.5V4.5H156Z" stroke="black" fill="#fff" />
-              </G>
-            </G>
-            
-            {/* --- Overlay student markers using real-time beacon data --- */}
-            {Object.entries(studentsByRoom).map(([roomId, roomStudents]) => {
-              if (roomStudents.length === 0) return null;
-              
-              // Get the first student's svgPosition (all students in same room have same position)
-              const firstStudent = roomStudents[0];
-              const svgPosition = firstStudent.svgPosition;
-              
-              if (!svgPosition) {
-                console.log(`No SVG position for room ${roomId}`);
-                return null;
-              }
-              
-              const { x, y } = svgPosition;
-              
-              // Cluster if >5 students
-              if (roomStudents.length > 5) {
-                return (
-                  <G key={roomId}>
-                    <Rect x={x-12} y={y-12} width={24} height={24} rx={12} fill="#2563EB" />
-                    <Text
-                      x={x}
-                      y={y+5}
-                      fontSize="13"
-                      fontWeight="bold"
-                      fill="#fff"
-                      textAnchor="middle"
-                    >
-                      {roomStudents.length}
-                    </Text>
-                  </G>
-                );
-              }
-              
-              // Individual markers - spread them around the beacon position
-              return roomStudents.map((student, idx) => {
-                const offsetX = (idx % 3) * 16 - 16; // Spread horizontally
-                const offsetY = Math.floor(idx / 3) * 16 - 8; // Stack vertically
-                
-                return (
-                  <G key={`${student.id}-${roomId}`}>
-                    <Rect 
-                      x={x-8+offsetX} 
-                      y={y-8+offsetY} 
-                      width={16} 
-                      height={16} 
-                      rx={8} 
-                      fill="#10B981" 
-                    />
-                    <Text
-                      x={x+offsetX}
-                      y={y+4+offsetY}
-                      fontSize="10"
-                      fontWeight="bold"
-                      fill="#fff"
-                      textAnchor="middle"
-                    >
-                      {student.fullName ? student.fullName[0] : 'S'}
-                    </Text>
-                  </G>
-                );
-              });
-            })}
-          </Svg>
-        </ScrollView>
-        
-        <View style={{ marginTop: 8, gap: 4 }}>
-          <Text style={{ color: '#6B7280', fontSize: 12 }}>
-            Real-time student positions based on nearest beacon signal strength
-          </Text>
-          <Text style={{ color: '#6B7280', fontSize: 11 }}>
-            Green circles = individual students, Blue circles = clusters (5+ students)
-          </Text>
-          
-          {/* Debug information */}
-          {studentsWithBeacons.length > 0 && (
-            <View style={{ marginTop: 8, padding: 8, backgroundColor: '#F3F4F6', borderRadius: 6 }}>
-              <Text style={{ fontSize: 11, color: '#374151', fontWeight: '500', marginBottom: 4 }}>
-                Students with beacon data:
-              </Text>
-              {studentsWithBeacons.slice(0, 3).map(student => (
-                <Text key={student.id} style={{ fontSize: 10, color: '#6B7280' }}>
-                  • {student.fullName}: {student.nearestBeacon.roomName} (RSSI: {student.nearestBeacon.rssi})
-                </Text>
-              ))}
-              {studentsWithBeacons.length > 3 && (
-                <Text style={{ fontSize: 10, color: '#6B7280' }}>
-                  ... and {studentsWithBeacons.length - 3} more
-                </Text>
-              )}
-            </View>
-          )}
-        </View>
-      </View>
-    );
-  };
-
   const renderTabContent = () => {
     switch (selectedTab) {
       case 'overview':
@@ -1567,7 +1374,9 @@ const SupervisorDashboard = ({ navigation }) => {
           </View>
         );
       case 'indoor':
-        return renderIndoorTrackingMap();
+        return (
+          <IndoorMap studentsByRoom={studentsByRoom} students={students} beacons={beacons} />
+        );
       default:
         return null;
     }
@@ -1625,18 +1434,29 @@ const SupervisorDashboard = ({ navigation }) => {
   useEffect(() => {
     const group = {};
     students.forEach(student => {
-      // Use nearestBeacon data for real-time positioning
-      if (student.nearestBeacon && student.nearestBeacon.roomId) {
-        const roomId = student.nearestBeacon.roomId;
-        if (!group[roomId]) group[roomId] = [];
-        group[roomId].push({
-          ...student,
-          svgPosition: student.nearestBeacon.svgPosition,
-          beaconRssi: student.nearestBeacon.rssi,
-          lastBeaconUpdate: student.nearestBeacon.lastSeen
-        });
+      let roomId, svgPosition;
+      if (student.nearestBeacon && student.nearestBeacon.roomId && student.nearestBeacon.svgPosition) {
+        roomId = student.nearestBeacon.roomId.toLowerCase();
+        svgPosition = student.nearestBeacon.svgPosition;
+      } else if (student.currentRoomId && student.svgPosition) {
+        roomId = student.currentRoomId.trim().toLowerCase();
+        svgPosition = student.svgPosition;
+      } else {
+        roomId = 'room01';
+        svgPosition = ROOM_DOT_POSITIONS ? ROOM_DOT_POSITIONS['room01'] : { x: 0, y: 0 };
       }
+      if (!group[roomId]) group[roomId] = [];
+      group[roomId].push({
+        ...student,
+        svgPosition,
+      });
     });
+    // Ensure all rooms are present as arrays
+    const roomKeys = Object.keys(ROOM_DOT_POSITIONS || {});
+    if (!ROOM_DOT_POSITIONS) console.warn('ROOM_DOT_POSITIONS is undefined! Check import/export.');
+    for (const roomId of roomKeys) {
+      if (!group[roomId]) group[roomId] = [];
+    }
     setStudentsByRoom(group);
   }, [students]);
 
@@ -1734,6 +1554,63 @@ const SupervisorDashboard = ({ navigation }) => {
         
         {renderTabContent()}
       </ScrollView>
+      {/* Student/Cluster Details Modal */}
+      <Modal
+        visible={studentModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setStudentModalVisible(false)}
+      >
+        <View style={{ flex: 1, justifyContent: 'flex-end', alignItems: 'center', backgroundColor: 'rgba(30,41,59,0.18)' }}>
+          <View style={{ width: '98%', borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff', padding: 24, marginBottom: 8, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 8, elevation: 8 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Text style={{ fontWeight: 'bold', fontSize: 22 }}>Student Details</Text>
+              <TouchableOpacity onPress={() => setStudentModalVisible(false)}>
+                <Feather name="x" size={28} color="#334155" />
+              </TouchableOpacity>
+            </View>
+            {selectedStudent && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 24 }}>
+                <View style={{ minWidth: 120 }}>
+                  <Text style={{ color: '#64748b', fontSize: 15 }}>Name</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.fullName}</Text>
+                  <Text style={{ color: '#64748b', fontSize: 15, marginTop: 8 }}>Department</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.department}</Text>
+                </View>
+                <View style={{ minWidth: 120 }}>
+                  <Text style={{ color: '#64748b', fontSize: 15 }}>Current Room</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.nearestBeacon?.roomName || '-'}</Text>
+                  <Text style={{ color: '#64748b', fontSize: 15, marginTop: 8 }}>Year</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.year}</Text>
+                </View>
+                <View style={{ minWidth: 120 }}>
+                  <Text style={{ color: '#64748b', fontSize: 15 }}>Status</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.status || 'online'}</Text>
+                  <Text style={{ color: '#64748b', fontSize: 15, marginTop: 8 }}>Last Seen</Text>
+                  <Text style={{ fontWeight: 'bold', fontSize: 18 }}>{selectedStudent.lastSeen || '-'}</Text>
+                </View>
+              </View>
+            )}
+            {selectedCluster && (
+              <View>
+                {selectedCluster.map((student, idx) => (
+                  <View key={student.id || idx} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                    <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#10B981', justifyContent: 'center', alignItems: 'center', marginRight: 12 }}>
+                      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>{student.fullName ? student.fullName[0] : 'S'}</Text>
+                    </View>
+                    <View>
+                      <Text style={{ fontWeight: 'bold', fontSize: 16 }}>{student.fullName}</Text>
+                      <Text style={{ color: '#64748b', fontSize: 13 }}>{student.department} • {student.year} • {student.status || 'online'}</Text>
+                      <Text style={{ color: '#64748b', fontSize: 13 }}>Room: {student.nearestBeacon?.roomName || '-'}</Text>
+                      <Text style={{ color: '#64748b', fontSize: 13 }}>Last Seen: {student.lastSeen || '-'}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };

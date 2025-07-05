@@ -101,6 +101,10 @@ const UserTracker = ({ navigation }) => {
   // --- ADDED: State for beacon-room mapping ---
   const [beaconRoomMap, setBeaconRoomMap] = useState({});
   
+  // --- BLE Scan Interval State ---
+  const [scanIntervalId, setScanIntervalId] = useState(null);
+  const [scanTimeoutId, setScanTimeoutId] = useState(null);
+  
   // Get location name from beacon minor value
   const getLocationName = (minor) => {
     switch (minor) {
@@ -325,11 +329,14 @@ const UserTracker = ({ navigation }) => {
   }, []);
 
 
+  // --- Modified BLE Scan Logic: 10s bursts, repeating ---
   const startBeaconScan = async () => {
+    console.log('[BLE] startBeaconScan called');
+    // Prevent multiple intervals
+    if (scanIntervalId) return;
     setBeacons([]);
     setBleError(null);
     setScanning(true);
-    
     try {
       const hasPermission = await requestBlePermissions();
       if (!hasPermission) {
@@ -337,50 +344,68 @@ const UserTracker = ({ navigation }) => {
         setScanning(false);
         return;
       }
-      
-      // Enhanced scan options
-      const scanOptions = {
-        allowDuplicates: true,
-        scanMode: 2 // SCAN_MODE_LOW_LATENCY
-      };
-  
-      console.log('Starting BLE scan with options:', scanOptions);
-      
-      bleManagerRef.current.startDeviceScan(null, scanOptions, (error, device) => {
-        if (error) {
-          console.error('BLE scan error:', error);
-          setBleError(error.message);
-          setScanning(false);
-          return;
-        }
-        
-        // Debug all discovered devices
-        console.log(`Discovered: ${device.id} | ${device.name || 'Unnamed'} | RSSI: ${device.rssi}`);
-        
-        if (device?.manufacturerData) {
-          const iBeacon = parseIBeaconData(device.manufacturerData);
-          
-          if (iBeacon) {
-            console.log('iBeacon detected:', iBeacon);
-            
-            if (iBeacon.uuid === TARGET_UUID && iBeacon.major === TARGET_MAJOR) {
-              const location = getLocationName(iBeacon.minor);
-              console.log(`✅ HoneyComm Beacon: ${location} | Minor: ${iBeacon.minor}`);
-              
-              setBeacons(prev => {
-                if (prev.some(b => b.minor === iBeacon.minor)) return prev;
-                return [...prev, { 
-                  id: device.id,
-                  name: device.name || 'Unknown',
-                  minor: iBeacon.minor,
-                  rssi: device.rssi,
-                  location
-                }];
-              });
+      // Function to start a single scan burst
+      const doScan = () => {
+        console.log('[BLE] Starting scan burst');
+        const scanOptions = {
+          allowDuplicates: true,
+          scanMode: 2 // SCAN_MODE_LOW_LATENCY
+        };
+        bleManagerRef.current.startDeviceScan(null, scanOptions, (error, device) => {
+          if (error) {
+            console.error('BLE scan error:', error);
+            setBleError(error.message);
+            setScanning(false);
+            return;
+          }
+          // Debug all discovered devices
+          console.log(`Discovered: ${device.id} | ${device.name || 'Unnamed'} | RSSI: ${device.rssi}`);
+          if (device?.manufacturerData) {
+            const iBeacon = parseIBeaconData(device.manufacturerData);
+            if (iBeacon) {
+              console.log('iBeacon detected:', iBeacon);
+              if (iBeacon.uuid === TARGET_UUID && iBeacon.major === TARGET_MAJOR) {
+                const location = getLocationName(iBeacon.minor);
+                console.log(`✅ HoneyComm Beacon: ${location} | Minor: ${iBeacon.minor}`);
+                setBeacons(prev => {
+                  const now = Date.now();
+                  // Update or add beacon, and keep timestamp
+                  let updated = prev.filter(b => b.minor !== iBeacon.minor);
+                  updated.push({
+                    id: device.id,
+                    name: device.name || 'Unknown',
+                    minor: iBeacon.minor,
+                    rssi: device.rssi,
+                    location,
+                    lastSeen: now
+                  });
+                  // Prune beacons not seen in last 15s
+                  const pruned = updated.filter(b => now - (b.lastSeen || now) < 15000);
+                  if (pruned.length !== updated.length) {
+                    console.log('[BLE] Pruned old beacons:', updated.length - pruned.length);
+                  }
+                  return pruned;
+                });
+              }
             }
           }
-        }
-      });
+        });
+        // Stop scan after 10s
+        const timeout = setTimeout(() => {
+          bleManagerRef.current.stopDeviceScan();
+          // setScanning(false); // <-- Removed so scanning stays true for repeated bursts
+          console.log('[BLE] Scan burst stopped after 10s');
+        }, 10000);
+        setScanTimeoutId(timeout);
+      };
+      // Start first scan burst immediately
+      doScan();
+      // Set interval to repeat every 10s
+      const interval = setInterval(() => {
+        console.log('[BLE] Interval fired, starting scan burst');
+        doScan();
+      }, 10000);
+      setScanIntervalId(interval);
     } catch (e) {
       console.error('Scan startup error:', e);
       setBleError(e.message);
@@ -391,13 +416,23 @@ const UserTracker = ({ navigation }) => {
   const stopBeaconScan = () => {
     bleManagerRef.current.stopDeviceScan();
     setScanning(false);
+    if (scanIntervalId) {
+      clearInterval(scanIntervalId);
+      setScanIntervalId(null);
+    }
+    if (scanTimeoutId) {
+      clearTimeout(scanTimeoutId);
+      setScanTimeoutId(null);
+    }
+    console.log('[BLE] stopBeaconScan called. Scanning stopped and timers cleared');
   };
 
-
-
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       bleManagerRef.current?.destroy();
+      if (scanIntervalId) clearInterval(scanIntervalId);
+      if (scanTimeoutId) clearTimeout(scanTimeoutId);
     };
   }, []);
   
@@ -1225,10 +1260,28 @@ const UserTracker = ({ navigation }) => {
   const updateUserRoomInFirestore = async (roomId, roomName, beaconData) => {
     if (!userData?.uid) return;
     try {
-      await firestoreUpdateDoc(doc(db, 'users', userData.uid), {
+      // Fetch previous roomHistory
+      const userDocRef = doc(db, 'users', userData.uid);
+      const userDocSnap = await getDoc(userDocRef);
+      let prevHistory = [];
+      if (userDocSnap.exists() && Array.isArray(userDocSnap.data().roomHistory)) {
+        prevHistory = userDocSnap.data().roomHistory;
+      }
+      const prevRoom = prevHistory.length > 0 ? prevHistory[prevHistory.length - 1] : null;
+      // Prepare new room entry
+      const newRoomEntry = {
+        roomId,
+        roomName,
+        svgPosition: beaconData?.svgPosition || null,
+        timestamp: new Date().toISOString(),
+      };
+      // Append new room, keep only last 3 (chronological order: oldest first, newest last)
+      const updatedHistory = [...prevHistory, newRoomEntry].slice(-3);
+      await firestoreUpdateDoc(userDocRef, {
         currentRoomId: roomId,
         currentRoomName: roomName,
         lastRoomUpdate: new Date().toISOString(),
+        roomHistory: updatedHistory,
         // Store beacon information for supervisor dashboard
         nearestBeacon: {
           roomId: roomId,
@@ -1239,7 +1292,16 @@ const UserTracker = ({ navigation }) => {
           rssi: beaconData?.rssi || null
         }
       });
-      console.log(`Updated user room: ${roomId} (${roomName})`);
+      // --- ROOM CHANGE LOG ---
+      if (!prevRoom || prevRoom.roomId !== roomId) {
+        console.log('[ROOM CHANGE]', {
+          prevRoom: prevRoom ? prevRoom.roomId : null,
+          newRoom: roomId,
+          newRoomName: roomName,
+          timestamp: newRoomEntry.timestamp,
+          beacon: beaconData
+        });
+      }
     } catch (error) {
       ErrorHandler.logError(error, { action: 'updateUserRoomInFirestore', userId: userData?.uid, roomId }, ERROR_SEVERITY.LOW);
     }
@@ -1249,19 +1311,22 @@ const UserTracker = ({ navigation }) => {
   useEffect(() => {
     if (!beacons || beacons.length === 0 || Object.keys(beaconRoomMap).length === 0) return;
     
+    // Only consider beacons seen in the last 15 seconds
+    const now = Date.now();
+    const recentBeacons = beacons.filter(b => now - (b.lastSeen || now) < 15000);
+    if (recentBeacons.length === 0) return;
     // Find the closest beacon (highest RSSI)
     let closest = null;
     let highestRssi = -100; // Start with a very low RSSI value
-    
-    for (const beacon of beacons) {
-      if (beacon.type === 'iBeacon') {
-        const key = `${beacon.uuid}-${beacon.major}-${beacon.minor}`;
+    for (const beacon of recentBeacons) {
+      if (beacon.type === 'iBeacon' || beacon.uuid) {
+        const key = `${beacon.uuid || TARGET_UUID}-${beacon.major || TARGET_MAJOR}-${beacon.minor}`;
         if (beaconRoomMap[key]) {
           // Use RSSI to determine closest beacon (higher RSSI = closer)
           if (beacon.rssi > highestRssi) {
             highestRssi = beacon.rssi;
-            closest = { 
-              ...beacon, 
+            closest = {
+              ...beacon,
               ...beaconRoomMap[key],
               beaconId: key
             };
@@ -1269,9 +1334,15 @@ const UserTracker = ({ navigation }) => {
         }
       }
     }
-    
     if (closest && closest.roomId) {
-      console.log(`Closest beacon: ${closest.roomName} (RSSI: ${closest.rssi})`);
+      // --- ROOM CHANGE LOG ---
+      console.log('[ROOM CHANGE EFFECT] Closest beacon:', {
+        roomId: closest.roomId,
+        roomName: closest.roomName,
+        rssi: closest.rssi,
+        beaconId: closest.beaconId,
+        timestamp: new Date().toISOString(),
+      });
       updateUserRoomInFirestore(closest.roomId, closest.roomName, closest);
     }
   }, [beacons, beaconRoomMap, userData?.uid]);
