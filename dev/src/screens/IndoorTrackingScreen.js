@@ -83,9 +83,9 @@ const IndoorTrackingScreen = () => {
   }, []);
 
   // Get room info from beacon data
-  const getRoomInfo = (roomId) => {
-    return BEACON_DATA.find(beacon => beacon.svgRoomId === roomId);
-  };
+  // const getRoomInfo = (roomId) => {
+  //   return BEACON_DATA.find(beacon => beacon.svgRoomId === roomId);
+  // };
 
   // Get users in specific room
   const getUsersInRoom = (roomId) => {

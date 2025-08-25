@@ -290,32 +290,22 @@ export const IndoorLocationProvider = ({ children }) => {
   const startTracking = useCallback(async () => {
     try {
       dispatch({ type: ACTIONS.CLEAR_ERROR });
-      
       // Initialize BLE service
       const initialized = await bleService.initialize();
       if (!initialized) {
         throw new Error('Failed to initialize BLE service');
       }
-      
       // Set up event listeners using the correct methods and event names
       unsubscribeRefs.current.beaconScan = bleService.addListener('beaconDetected', handleBeaconScan);
       unsubscribeRefs.current.bluetoothStateChanged = bleService.addListener('bluetoothStateChanged', handleBluetoothStateChange);
       unsubscribeRefs.current.error = bleService.addListener('scanError', handleError);
-      
-      // Start scanning
-      const started = await bleService.startScanning();
-      if (!started) {
-        throw new Error('Failed to start BLE scanning');
-      }
-      
+      // Start burst scanning
+      await bleService.startBurstScanning();
       dispatch({ type: ACTIONS.SET_TRACKING_STATUS, payload: true });
-      
       // Initialize Kalman filter
       kalmanFilter.initialize(0, 0, 0, 0);
-      
       console.log('🚀 INDOOR TRACKING STARTED');
       console.log('📡 Scanning for beacons...');
-      
     } catch (error) {
       console.error('Error starting tracking:', error);
       dispatch({ 
@@ -328,8 +318,7 @@ export const IndoorLocationProvider = ({ children }) => {
   // Stop tracking
   const stopTracking = useCallback(async () => {
     try {
-      await bleService.stopScanning();
-      
+      await bleService.stopBurstScanning();
       // Remove event listeners using stored unsubscribe functions
       if (unsubscribeRefs.current.beaconScan) {
         unsubscribeRefs.current.beaconScan();
@@ -343,12 +332,9 @@ export const IndoorLocationProvider = ({ children }) => {
         unsubscribeRefs.current.error();
         unsubscribeRefs.current.error = null;
       }
-      
       dispatch({ type: ACTIONS.SET_TRACKING_STATUS, payload: false });
       dispatch({ type: ACTIONS.CLEAR_BEACONS });
-      
       console.log('⏹️ INDOOR TRACKING STOPPED');
-      
     } catch (error) {
       console.error('Error stopping tracking:', error);
       dispatch({ 

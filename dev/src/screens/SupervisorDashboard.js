@@ -41,7 +41,7 @@ import { useIndoorTracking } from '../hooks/useIndoorTracking';
 import { Feather } from '@expo/vector-icons';
 import SvgPanZoom from 'react-native-svg-pan-zoom';
 import IndoorMap from '../components/IndoorMap';
-import { ROOM_DOT_POSITIONS } from '../components/IndoorMap';
+import { ROOM_DOT_POSITIONS } from '../components/RoomDotPositions';
 
 const { width, height } = Dimensions.get('window');
 
@@ -378,8 +378,12 @@ const SupervisorDashboard = ({ navigation }) => {
         }
       });
 
-      const studentsList = Array.from(studentsMap.values());
-      console.log('Total unique students found:', studentsList.length);
+      const studentsList = Array.from(studentsMap.values())
+        .filter(s => s && s.id) // Remove nulls and students without id
+        .reduce((acc, curr) => {
+          if (!acc.find(s => s.id === curr.id)) acc.push(curr);
+          return acc;
+        }, []);
       setStudents(studentsList);
       return studentsList;
     } catch (error) {

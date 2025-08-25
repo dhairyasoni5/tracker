@@ -2,6 +2,7 @@ import React, { useRef, useState, useMemo } from 'react';
 import { View, Text, TouchableOpacity, Modal, ScrollView, TextInput, FlatList } from 'react-native';
 import Svg, { G, Path, Rect, Circle, Text as SvgText, Polyline, Polygon } from 'react-native-svg';
 import { Feather } from '@expo/vector-icons';
+import { ROOM_DOT_POSITIONS } from './RoomDotPositions';
 
 // Helper: status color
 const getStatusColor = (student) => {
@@ -9,9 +10,9 @@ const getStatusColor = (student) => {
   const lastUpdate = new Date(student.lastRoomUpdate || student.timestamp || 0);
   const now = new Date();
   const diff = (now - lastUpdate) / 1000; // seconds
-  if (!isNaN(lastUpdate) && diff < 60) return '#22c55e'; // Online: green
-  if (!isNaN(lastUpdate) && diff < 300) return '#f59e42'; // Away: yellow
-  return '#9ca3af'; // Offline: gray
+  if (!isNaN(lastUpdate) && diff < 300) return '#166534'; // Online: dark green (<5 min)
+  if (!isNaN(lastUpdate) && diff < 600) return '#eab308'; // Away: yellow (5-10 min)
+  return '#000000'; // Offline: black (>10 min)
 };
 
 // Helper: status text
@@ -19,48 +20,18 @@ const getStatusText = (student) => {
   const lastUpdate = new Date(student.lastRoomUpdate || student.timestamp || 0);
   const now = new Date();
   const diff = (now - lastUpdate) / 1000; // seconds
-  if (!isNaN(lastUpdate) && diff < 60) return 'Online';
-  if (!isNaN(lastUpdate) && diff < 300) return 'Away';
+  if (!isNaN(lastUpdate) && diff < 300) return 'Online';
+  if (!isNaN(lastUpdate) && diff < 600) return 'Away';
   return 'Offline';
 };
 
 // Room center positions (SVG coordinates, extracted from groundfloor.svg)
-export const ROOM_DOT_POSITIONS = {
-  room01: { x: 157.5, y: 59 },    // polygon, visually center
-  room02: { x: 303.5, y: 59 },    // polygon, visually center
-  room03: { x: 439, y: 109 },     // polygon, visually center
-  room04: { x: 585, y: 59 },      // polygon, visually center
-  room05: { x: 106, y: 154 },     // triangle, visually center
-  room06: { x: 189, y: 153.5 },   // rect: x=157, y=126.5, w=64, h=54 => cx=189, cy=153.5
-  room07: { x: 80, y: 260 },      // polygon, visually center
-  room08: { x: 272.5, y: 277.25 },// polygon, visually center
-  room09: { x: 260, y: 177 },     // rect: x=239.5, y=127.5, w=41, h=99 => cx=260, cy=177
-  room10: { x: 260, y: 235.5 },   // rect: x=239.5, y=226.5, w=41, h=18 => cx=260, cy=235.5
-  room11: { x: 293, y: 186 },     // rect: x=280.5, y=127.5, w=25, h=117 => cx=293, cy=186
-  room12: { x: 354, y: 183.25 },  // polygon, visually center
-  room13: { x: 521, y: 183.5 },   // polygon, visually center
-  room14: { x: 399, y: 252 },     // polygon, visually center
-  room15: { x: 501, y: 248 },     // polygon, visually center
-  room16: { x: 619.75, y: 193.5 },// rect: x=599.5, y=127.5, w=40.5, h=132 => cx=619.75, cy=193.5
-  room17: { x: 660.25, y: 193.5 },// rect: x=640, y=127.5, w=40.5, h=132 => cx=660.25, cy=193.5
-  room18: { x: 610, y: 284.75 },  // polygon, visually center
-  room19: { x: 708, y: 284.75 },  // polygon, visually center
-  room20: { x: 345.5, y: 291.25 },// polygon, visually center
-  room21: { x: 438.25, y: 295.75 },// polygon, visually center
-  room22: { x: 531, y: 295.75 },  // polygon, visually center
-  room23: { x: 335.5, y: 142.25 },// rect: x=319.5, y=127.5, w=32, h=29.5 => cx=335.5, cy=142.25
-  room24: { x: 366.25, y: 142.25 },// rect: x=351.5, y=127.5, w=29.5, h=29.5 => cx=366.25, cy=142.25
-  room25: { x: 511.25, y: 142.25 },// rect: x=497, y=127.5, w=28.5, h=29.5 => cx=511.25, cy=142.25
-  room26: { x: 553, y: 142.25 },  // rect: x=525.5, y=127.5, w=55, h=29.5 => cx=553, cy=142.25
-  room27: { x: 568, y: 183.5 },   // rect: x=555.5, y=157, w=25, h=53 => cx=568, cy=183.5
-  room28: { x: 729, y: 131.75 },  // polygon, visually center
-  room29: { x: 562.25, y: 248 },  // polygon, visually center
-};
+
 
 const DOT_LEGEND = [
-  { color: '#22c55e', label: 'Online' },
-  { color: '#f59e42', label: 'Away' },
-  { color: '#9ca3af', label: 'Offline' },
+  { color: '#166534', label: 'Online' },
+  { color: '#eab308', label: 'Away' },
+  { color: '#000000', label: 'Offline' },
 ];
 
 // Room color mapping (semi-transparent backgrounds, visually distinct)
@@ -118,8 +89,8 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
     const lastUpdate = new Date(student.lastRoomUpdate || student.timestamp || 0);
     const now = new Date();
     const diff = (now - lastUpdate) / 1000; // seconds
-    if (!isNaN(lastUpdate) && diff < 60) return 'Online';
-    if (!isNaN(lastUpdate) && diff < 300) return 'Away';
+    if (!isNaN(lastUpdate) && diff < 300) return 'Online';
+    if (!isNaN(lastUpdate) && diff < 600) return 'Away';
     return 'Offline';
   };
 
@@ -302,13 +273,18 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
         // Ensure path is in chronological order (oldest first, newest last)
         const path = Array.isArray(rawPath) && rawPath.length > 1 && rawPath[0].timestamp > rawPath[rawPath.length-1].timestamp
           ? [...rawPath].reverse() : rawPath;
-        console.log('DEBUG: Rendering polyline for showPathForStudent:', showPathForStudent);
-        console.log('DEBUG: Path roomHistory:', path);
-        // Polyline points
-        const points = path.map(room => room.svgPosition && `${room.svgPosition.x},${room.svgPosition.y}`).filter(Boolean).join(' ');
-        console.log('DEBUG: Polyline points string:', points);
+        // Filter out null/invalid rooms
+        const filteredPath = path.filter(room => room && room.roomId && ROOM_DOT_POSITIONS[room.roomId]);
+        if (filteredPath.length < 2) return null;
+        // Polyline points (always use ROOM_DOT_POSITIONS)
+        const points = filteredPath.map(room => {
+          const pos = ROOM_DOT_POSITIONS[room.roomId];
+          return `${pos.x},${pos.y}`;
+        }).join(' ');
         // Helper to draw arrowhead
-        const renderArrow = (from, to, idx) => {
+        const renderArrow = (fromRoom, toRoom, idx) => {
+          const from = ROOM_DOT_POSITIONS[fromRoom.roomId];
+          const to = ROOM_DOT_POSITIONS[toRoom.roomId];
           const dx = to.x - from.x;
           const dy = to.y - from.y;
           const len = Math.sqrt(dx*dx + dy*dy);
@@ -352,14 +328,15 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
           } else {
             initials = (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
           }
-          console.log('DEBUG initials:', { fullName: student.fullName, initials });
           return initials;
         };
         // Helper to get status color
         const statusColor = getStatusColor(showPathForStudent);
         // Current room (last in path)
-        const currentRoom = path[path.length - 1];
-        const startRoom = path[0];
+        const currentRoom = filteredPath[filteredPath.length - 1];
+        const startRoom = filteredPath[0];
+        const currentPos = ROOM_DOT_POSITIONS[currentRoom.roomId];
+        const startPos = ROOM_DOT_POSITIONS[startRoom.roomId];
         return (
           <>
             {/* Polyline (thinner, more transparent) */}
@@ -373,81 +350,78 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
               opacity={0.45}
             />
             {/* Dots at each room */}
-            {path.map((room, idx) => (
-              <Circle
-                key={`dot-${idx}`}
-                cx={room.svgPosition.x}
-                cy={room.svgPosition.y}
-                r={7}
-                fill="#2563EB"
-                opacity={0.85}
-                stroke="#fff"
-                strokeWidth={2}
-              />
-            ))}
-            {/* Arrowheads for each segment */}
-            {path.slice(0, -1).map((room, idx) => renderArrow(room.svgPosition, path[idx+1].svgPosition, idx))}
-            {/* Avatar at current room */}
-            {currentRoom && (
-              <>
+            {filteredPath.map((room, idx) => {
+              const pos = ROOM_DOT_POSITIONS[room.roomId];
+              return (
                 <Circle
-                  cx={currentRoom.svgPosition.x}
-                  cy={currentRoom.svgPosition.y}
-                  r={20}
-                  fill={statusColor}
-                  opacity={1}
+                  key={`dot-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={7}
+                  fill="#2563EB"
+                  opacity={0.85}
                   stroke="#fff"
                   strokeWidth={2}
-                  style={{
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 2 },
-                    shadowOpacity: 0.18,
-                    shadowRadius: 4,
-                    elevation: 3,
-                  }}
                 />
-                <SvgText
-                  x={currentRoom.svgPosition.x}
-                  y={currentRoom.svgPosition.y + 6}
-                  fontSize={13}
-                  fill="#fff"
-                  fontWeight="bold"
-                  textAnchor="middle"
-                  opacity={1}
-                  letterSpacing={2}
-                >
-                  {getInitials(showPathForStudent)}
-                </SvgText>
-                {/* 'Current' label */}
-                <SvgText
-                  x={currentRoom.svgPosition.x}
-                  y={currentRoom.svgPosition.y - 26}
-                  fontSize={11}
-                  fill="#2563EB"
-                  fontWeight="bold"
-                  textAnchor="middle"
-                  opacity={0.85}
-                  style={{ fontFamily: 'System' }}
-                >
-                  Current
-                </SvgText>
-              </>
-            )}
+              );
+            })}
+            {/* Arrowheads for each segment */}
+            {filteredPath.slice(0, -1).map((room, idx) => renderArrow(room, filteredPath[idx+1], idx))}
+            {/* Move the Avatar at current room (last in path) and label to the end so it is drawn on top */}
+            <Circle
+              cx={currentPos.x}
+              cy={currentPos.y}
+              r={20}
+              fill={statusColor}
+              opacity={1}
+              stroke="#fff"
+              strokeWidth={2}
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.18,
+                shadowRadius: 4,
+                elevation: 3,
+              }}
+            />
+            <SvgText
+              x={currentPos.x}
+              y={currentPos.y + 6}
+              fontSize={13}
+              fill="#fff"
+              fontWeight="bold"
+              textAnchor="middle"
+              opacity={1}
+              letterSpacing={2}
+            >
+              {getInitials(showPathForStudent)}
+            </SvgText>
+            {/* 'Current' label */}
+            <SvgText
+              x={currentPos.x}
+              y={currentPos.y - 26}
+              fontSize={13}
+              fill="#2563EB"
+              fontWeight="bold"
+              textAnchor="middle"
+              opacity={1}
+              letterSpacing={1}
+            >
+              Current
+            </SvgText>
             {/* 'Start' label at oldest room */}
-            {startRoom && (
-              <SvgText
-                x={startRoom.svgPosition.x}
-                y={startRoom.svgPosition.y - 18}
-                fontSize={11}
-                fill="#2563EB"
-                fontWeight="bold"
-                textAnchor="middle"
-                opacity={0.85}
-                style={{ fontFamily: 'System' }}
-              >
-                Start
-              </SvgText>
-            )}
+            <SvgText
+              x={startPos.x}
+              y={startPos.y - 18}
+              fontSize={11}
+              fill="#2563EB"
+              fontWeight="bold"
+              textAnchor="middle"
+              opacity={0.85}
+              style={{ fontFamily: 'System' }}
+            >
+              Start
+            </SvgText>
           </>
         );
       })()}
@@ -484,8 +458,12 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
           );
         }
         // Spread up to 3 dots horizontally around center
-        return roomStudents.map((student, idx) => {
-          const offset = (roomStudents.length === 1) ? 0 : (idx - (roomStudents.length - 1) / 2) * 18;
+        // Deduplicate students by id/uid before rendering
+        const uniqueRoomStudents = Array.from(
+          new Map(roomStudents.map(s => [(s.id || s.uid || Math.random()), s])).values()
+        );
+        return uniqueRoomStudents.map((student, idx) => {
+          const offset = (uniqueRoomStudents.length === 1) ? 0 : (idx - (uniqueRoomStudents.length - 1) / 2) * 18;
           const pos = getRoomDotPosition(student) || basePos;
           return (
             <G key={student.id || student.uid || idx}>
@@ -553,9 +531,9 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
   const showSuggestions = searchFocused && searchQuery && filteredStudents.length > 0 && !selectedStudent;
 
   const renderStatusBadge = (status) => {
-    let color = '#9ca3af';
-    if (status === 'Online') color = '#22c55e';
-    else if (status === 'Away') color = '#f59e42';
+    let color = '#000000';
+    if (status === 'Online') color = '#166534';
+    else if (status === 'Away') color = '#eab308';
     return (
       <View style={{ backgroundColor: color, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2, marginLeft: 8, alignSelf: 'center' }}>
         <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>{status.toLowerCase()}</Text>
@@ -612,9 +590,9 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
 
   // --- UI: Search and Filter Bar (split into two rows) ---
   const statusOptions = [
-    { label: 'Online', color: '#22c55e' },
-    { label: 'Away', color: '#f59e42' },
-    { label: 'Offline', color: '#9ca3af' },
+    { label: 'Online', color: '#166534' },
+    { label: 'Away', color: '#eab308' },
+    { label: 'Offline', color: '#000000' },
   ];
 
   const renderSearchBar = () => (
@@ -851,6 +829,29 @@ const IndoorMap = ({ studentsByRoom, students, beacons }) => {
                       <Text style={{ color: '#64748b', fontSize: 13 }}>Room: {student.nearestBeacon?.roomName || student.currentRoomName || student.currentRoomId || '-'}</Text>
                       <Text style={{ color: '#64748b', fontSize: 13 }}>Status: {getStatusText(student)}</Text>
                       <Text style={{ color: '#64748b', fontSize: 13 }}>Last Seen: {student.lastSeen || student.timestamp || '-'}</Text>
+                      {/* Show Path Button for cluster student */}
+                      <TouchableOpacity
+                        onPress={() => {
+                          setShowPathForStudent(student);
+                          setStudentModalVisible(false);
+                        }}
+                        style={{
+                          marginTop: 8,
+                          backgroundColor: '#2563EB',
+                          borderRadius: 8,
+                          paddingVertical: 6,
+                          paddingHorizontal: 14,
+                          alignSelf: 'flex-start',
+                          shadowColor: '#2563EB',
+                          shadowOffset: { width: 0, height: 2 },
+                          shadowOpacity: 0.10,
+                          shadowRadius: 6,
+                          elevation: 2,
+                        }}
+                        accessibilityLabel="Show Path"
+                      >
+                        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14, fontFamily: 'System' }}>Show Path</Text>
+                      </TouchableOpacity>
                     </View>
                   </View>
                 ))}

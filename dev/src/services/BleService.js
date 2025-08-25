@@ -26,6 +26,11 @@ class BleService {
       errors: []
     };
     this.isInitialized = false;
+    this.burstIntervalId = null;
+    this.burstTimeoutId = null;
+    this.burstActive = false;
+    this.BURST_DURATION_MS = 20000; // 20 seconds
+    this.BURST_INTERVAL_MS = 20000; // 20 seconds
   }
 
   // Initialize BLE service
@@ -278,6 +283,55 @@ class BleService {
       this.logError('Failed to stop scanning', error);
       throw error;
     }
+  }
+
+  // Start burst scanning (20s burst, 20s interval)
+  async startBurstScanning(options = {}) {
+    console.log('[BURST] startBurstScanning() called');
+    if (this.burstActive) {
+      console.log('[BURST] Burst scanning already active');
+      return;
+    }
+    if (this.bluetoothState !== 'PoweredOn') {
+      console.log(`[BURST] Burst scanning requested but Bluetooth state is: ${this.bluetoothState}`);
+      return;
+    }
+    this.burstActive = true;
+    console.log('[BURST] === Burst scanning STARTED ===');
+    const doBurst = async () => {
+      console.log('[BURST] === Scan burst STARTED ===');
+      await this.startScanning(options);
+      this.burstTimeoutId = setTimeout(async () => {
+        await this.stopScanning();
+        console.log('[BURST] === Scan burst STOPPED after 20s ===');
+      }, this.BURST_DURATION_MS);
+    };
+    await doBurst();
+    this.burstIntervalId = setInterval(async () => {
+      console.log('[BURST] === Scan burst RESTART (interval fired) ===');
+      await this.startScanning(options);
+      if (this.burstTimeoutId) clearTimeout(this.burstTimeoutId);
+      this.burstTimeoutId = setTimeout(async () => {
+        await this.stopScanning();
+        console.log('[BURST] === Scan burst STOPPED after 20s ===');
+      }, this.BURST_DURATION_MS);
+    }, this.BURST_INTERVAL_MS);
+  }
+
+  // Stop burst scanning
+  async stopBurstScanning() {
+    console.log('[BURST] stopBurstScanning() called');
+    if (this.burstIntervalId) {
+      clearInterval(this.burstIntervalId);
+      this.burstIntervalId = null;
+    }
+    if (this.burstTimeoutId) {
+      clearTimeout(this.burstTimeoutId);
+      this.burstTimeoutId = null;
+    }
+    await this.stopScanning();
+    this.burstActive = false;
+    console.log('[BURST] === Burst scanning STOPPED ===');
   }
 
   // Get all detected beacons
