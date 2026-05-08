@@ -33,8 +33,8 @@ export const AuthProvider = ({ children }) => {
       
       // Clear AsyncStorage
       await AsyncStorage.multiRemove([
-        'firebase:authUser:AIzaSyDmD6ahr9z_uSABYnbBhDYI0lV8HEVynAM:[DEFAULT]',
-        'firebase:authToken:AIzaSyDmD6ahr9z_uSABYnbBhDYI0lV8HEVynAM:[DEFAULT]',
+        'firebase:authUser:[API_KEY]:[DEFAULT]',
+        'firebase:authToken:[API_KEY]:[DEFAULT]',
         'firebase:persistenceKey:[DEFAULT]'
       ]);
       
