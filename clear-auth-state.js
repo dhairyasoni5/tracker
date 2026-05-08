@@ -7,8 +7,8 @@ try {
   // For React Native AsyncStorage (simulated)
   console.log('📱 React Native storage keys to clear:');
   const rnKeys = [
-    'firebase:authUser:AIzaSyDmD6ahr9z_uSABYnbBhDYI0lV8HEVynAM:[DEFAULT]',
-    'firebase:authToken:AIzaSyDmD6ahr9z_uSABYnbBhDYI0lV8HEVynAM:[DEFAULT]',
+    'firebase:authUser:[API_KEY]:[DEFAULT]',
+    'firebase:authToken:[API_KEY]:[DEFAULT]',
     'firebase:persistenceKey:[DEFAULT]'
   ];
   

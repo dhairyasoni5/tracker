@@ -3,8 +3,8 @@ console.log('🔍 Debugging Admin Login Issue');
 console.log('');
 
 console.log('📝 Admin Credentials:');
-console.log('Email: admin@trackingapp.com');
-console.log('Password: einfochips');
+console.log('Email: [ADMIN_EMAIL]');
+console.log('Password: [ADMIN_PASSWORD]');
 console.log('');
 
 console.log('🔧 Potential Issues:');
@@ -16,7 +16,7 @@ console.log('');
 
 console.log('✅ Steps to Fix:');
 console.log('1. Check Firebase Console - Authentication tab');
-console.log('2. Verify user admin@trackingapp.com exists');
+console.log('2. Verify user [ADMIN_EMAIL] exists');
 console.log('3. Check Firestore - users collection');
 console.log('4. Verify admin user document has:');
 console.log('   - role: "admin"');
@@ -26,7 +26,7 @@ console.log('');
 
 console.log('🚀 Quick Test:');
 console.log('Run: npm start');
-console.log('Login with admin@trackingapp.com / einfochips');
+console.log('Login with [ADMIN_EMAIL] / [ADMIN_PASSWORD]');
 console.log('Check console logs for auth state changes');
 console.log('');
 
