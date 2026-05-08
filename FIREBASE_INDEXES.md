@@ -35,7 +35,7 @@ This app requires Firebase Firestore composite indexes for optimal performance. 
 
 ### Option 2: Manual Creation via Firebase Console
 1. Go to [Firebase Console](https://console.firebase.google.com)
-2. Select your project: `trackingapp-infochip`
+2. Select your project: `your-project-id`
 3. Navigate to Firestore Database → Indexes
 4. Click "Create Index"
 5. Set up each index with the fields listed above
